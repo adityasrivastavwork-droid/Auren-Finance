@@ -12,9 +12,17 @@ import java.util.Calendar
 class FinanceViewModel(application: Application) : AndroidViewModel(application) {
     private val repository: FinanceRepository
 
+    private val _isProfileLoaded = MutableStateFlow(false)
+    val isProfileLoaded: StateFlow<Boolean> = _isProfileLoaded.asStateFlow()
+
     init {
         val database = AppDatabase.getDatabase(application)
         repository = FinanceRepository(database.financeDao())
+        
+        // Listen to profile flow to mark it as loaded
+        repository.profile
+            .onEach { _isProfileLoaded.value = true }
+            .launchIn(viewModelScope)
     }
 
     // Database UI States
@@ -165,19 +173,49 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun addTransaction(amount: Double, type: String, accountId: Long, category: String, merchant: String, note: String = "", targetAccId: Long? = null) {
+    fun addTransaction(amount: Double, type: String, accountId: Long, category: String, merchant: String, note: String = "", targetAccId: Long? = null, dateOverride: Long? = null, isRecurring: Boolean = false) {
         viewModelScope.launch {
             val trans = Transaction(
                 amount = amount,
                 type = type,
-                date = System.currentTimeMillis(),
+                date = dateOverride ?: System.currentTimeMillis(),
                 accountId = accountId,
                 targetAccountId = targetAccId,
                 category = category,
                 merchant = merchant,
-                note = note
+                note = note,
+                isRecurring = isRecurring
             )
             repository.insertTransaction(trans)
+
+            // Auto-Save feature: whenever income of category "salary" or containing "salary" is logged
+            if (type == "Income" && (category.lowercase() == "salary" || merchant.lowercase().contains("salary") || category.lowercase() == "income")) {
+                val prof = repository.getProfileDirect()
+                if (prof != null && prof.autoSaveEnabled && prof.autoSavePercentage > 0.1 && prof.autoSaveGoalId != null) {
+                    val dbGoals = repository.getGoalsDirect()
+                    val targetGoal = dbGoals.find { it.id == prof.autoSaveGoalId }
+                    if (targetGoal != null) {
+                        val autoAmt = amount * (prof.autoSavePercentage / 100.0)
+                        if (autoAmt > 0.0) {
+                            val updated = targetGoal.copy(currentAmount = targetGoal.currentAmount + autoAmt)
+                            repository.updateGoal(updated)
+
+                            val autoTrans = Transaction(
+                                amount = autoAmt,
+                                type = "Savings",
+                                date = dateOverride ?: System.currentTimeMillis(),
+                                accountId = accountId,
+                                targetAccountId = null,
+                                category = "Savings",
+                                merchant = "Auto-Save Allocation",
+                                note = "Auto-moved ${prof.autoSavePercentage}% toward: ${targetGoal.name}",
+                                isRecurring = false
+                            )
+                            repository.insertTransaction(autoTrans)
+                        }
+                    }
+                }
+            }
 
             // If it's a debt/EMI payment, check if we should reduce outstanding debts
             if (type == "Debt" || category == "EMI") {
@@ -198,6 +236,12 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     fun deleteTransaction(transaction: Transaction) {
         viewModelScope.launch {
             repository.deleteTransaction(transaction)
+        }
+    }
+
+    fun updateBill(bill: BillSubscription) {
+        viewModelScope.launch {
+            repository.updateBill(bill)
         }
     }
 
@@ -338,6 +382,84 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun updateAutoSaveConfig(enabled: Boolean, percentage: Double, goalId: Long?) {
+        viewModelScope.launch {
+            val current = repository.getProfileDirect() ?: UserProfile()
+            repository.saveProfile(
+                current.copy(
+                    autoSaveEnabled = enabled,
+                    autoSavePercentage = percentage,
+                    autoSaveGoalId = goalId
+                )
+            )
+        }
+    }
+
+    private val _aiInsights = MutableStateFlow<String?>(null)
+    val aiInsights: StateFlow<String?> = _aiInsights.asStateFlow()
+
+    private val _isInsightsLoading = MutableStateFlow(false)
+    val isInsightsLoading: StateFlow<Boolean> = _isInsightsLoading.asStateFlow()
+
+    fun generateSpendingInsights() {
+        viewModelScope.launch {
+            _isInsightsLoading.value = true
+            try {
+                val txs = repository.getTransactionsDirect().filter { it.type.lowercase() == "expense" }
+                val totalSpent = txs.sumOf { it.amount }
+                val categoryGroups = txs.groupBy { it.category }.mapValues { it.value.sumOf { v -> v.amount } }
+                
+                val prof = repository.getProfileDirect()
+                val targetSavings = (prof?.salaryAmount ?: 60000.0) * 0.15
+                val currency = prof?.currency ?: "₹"
+                
+                val promptText = """
+                    Review the following monthly expense transaction dataset and profile targets.
+                    Total Expense: ${currency}${totalSpent}.
+                    Category breakdown: ${categoryGroups.map { "${it.key}: ${currency}${it.value}" }.joinToString()}
+                    Annual Net Income: ${currency}${prof?.salaryAmount ?: 60000.0}
+                    Recommended target savings rate: 15% (${currency}${targetSavings}).
+                    
+                    Analyze their spending habits. Output precisely 3 highly pragmatic, bulleted suggestions of specific areas or categories to cut back on to save money. Be direct, professional, use elegant phrasing, and reference actual categories/numbers from the data. Keep the suggestions short and compact.
+                """.trimIndent()
+
+                val response = RetrofitClient.service.generateContent(
+                    apiKey = geminiKey,
+                    request = GenerateContentRequest(
+                        contents = listOf(Content(parts = listOf(Part(text = promptText)))),
+                        systemInstruction = Content(parts = listOf(Part(text = "You are Auren's expert AI Spending Auditor. Analyze the metrics cleanly and return 3 high-impact saving directives.")), role = "system")
+                    )
+                )
+
+                val aiResult = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                if (!aiResult.isNullOrBlank()) {
+                    _aiInsights.value = aiResult
+                } else {
+                    _aiInsights.value = getDefaultLocalInsights(categoryGroups, currency)
+                }
+            } catch (e: Exception) {
+                val txs = repository.getTransactionsDirect().filter { it.type.lowercase() == "expense" }
+                val categoryGroups = txs.groupBy { it.category }.mapValues { it.value.sumOf { v -> v.amount } }
+                val prof = repository.getProfileDirect()
+                val currency = prof?.currency ?: "₹"
+                _aiInsights.value = getDefaultLocalInsights(categoryGroups, currency)
+            } finally {
+                _isInsightsLoading.value = false
+            }
+        }
+    }
+
+    private fun getDefaultLocalInsights(categoryGroups: Map<String, Double>, currency: String): String {
+        val shoppingValue = categoryGroups["Shopping"] ?: 0.0
+        val diningValue = categoryGroups["Dining"] ?: 0.0
+        
+        val list = mutableListOf<String>()
+        list.add("• **Optimize Dining spend**: Flexible outlays on Dining out (${currency}${String.format("%,.0f2", diningValue)}) represent an immediate friction point. Trim dining spend by 15% to reinforce the safety buffer.")
+        list.add("• **Rationalize Discretionary Shopping**: Total shopping outlays reached ${currency}${String.format("%,.0f2", shoppingValue)}. Setting a weekly limit of ${currency}${String.format("%,.0f2", shoppingValue * 0.5)} would secure immediate safety cushions.")
+        list.add("• **Establish Direct Separation**: Automate your savings rate first. Diverting an automatic percentage of incoming income directly to your targeted savings goals removes decision friction.")
+        return list.joinToString("\n")
+    }
+
     // AI Money Coach Interaction grounded on Room Database content.
     fun askAiCoach(userQuestion: String) {
         if (userQuestion.isBlank()) return
@@ -434,6 +556,36 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             }
         }
     }
+
+    // Bulk Import for automated bank feeds
+    fun importBankTransactions(list: List<Transaction>) {
+        viewModelScope.launch {
+            list.forEach { tx ->
+                repository.insertTransaction(tx)
+            }
+        }
+    }
+
+    fun depositEmergencyFund(amount: Double, accountId: Long) {
+        viewModelScope.launch {
+            val current = repository.getProfileDirect() ?: UserProfile()
+            val updatedFund = current.currentEmergencyFund + amount
+            repository.saveProfile(current.copy(currentEmergencyFund = updatedFund))
+            
+            val trans = Transaction(
+                amount = amount,
+                type = "Savings",
+                date = System.currentTimeMillis(),
+                accountId = accountId,
+                category = "Savings",
+                merchant = "Emergency Fund Contribution",
+                note = "Safeguard Deposit",
+                businessType = "Personal"
+            )
+            repository.insertTransaction(trans)
+        }
+    }
+
 }
 
 data class ChatMessage(

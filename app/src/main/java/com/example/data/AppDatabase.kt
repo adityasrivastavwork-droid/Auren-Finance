@@ -15,7 +15,7 @@ import androidx.room.RoomDatabase
         Debt::class,
         WeeklyReview::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -15,7 +15,10 @@ data class UserProfile(
     val incomeFrequency: String = "Fixed monthly salary",
     val safetyBuffer: Double = 2000.0,
     val currentEmergencyFund: Double = 0.0,
-    val isOnboarded: Boolean = false
+    val isOnboarded: Boolean = false,
+    val autoSaveEnabled: Boolean = false,
+    val autoSavePercentage: Double = 0.0,
+    val autoSaveGoalId: Long? = null
 )
 
 @Entity(tableName = "accounts")
