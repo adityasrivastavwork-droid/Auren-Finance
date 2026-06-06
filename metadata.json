@@ -1,0 +1,6 @@
+{
+  "name": "Auren Money",
+  "description": "Auren Money OS is a private personal-finance command centre designed to help you organize your salary, protect bills, control spending, and build savings.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
