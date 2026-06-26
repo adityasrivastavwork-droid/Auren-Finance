@@ -41,6 +41,13 @@ interface FinanceDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertTransaction(transaction: Transaction)
 
+    /**
+     * Bulk insert — much faster than calling [insertTransaction] in a loop.
+     * Used by SMS / bank-feed importers so 500 rows ≠ 500 round-trips.
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertTransactions(transactions: List<Transaction>)
+
     @Update
     suspend fun updateTransaction(transaction: Transaction)
 

@@ -117,9 +117,13 @@ fun AurenApp(viewModel: FinanceViewModel) {
              }
          }
     } else if (profile == null || !profile!!.isOnboarded) {
-        OnboardingScreen(onOnboard = { cur, obj, md, sal, pay, bal, buf ->
-            viewModel.onboardUser(cur, obj, md, sal, pay, bal, buf)
-        })
+        OnboardingFlow(
+            profile = profile,
+            viewModel = viewModel,
+            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden ->
+                viewModel.onboardUser(cur, obj, md, sal, pay, bal, buf, hidden)
+            }
+        )
     } else {
         var itemPendingForDeletion by remember { mutableStateOf<Any?>(null) }
 
@@ -155,7 +159,26 @@ fun AurenApp(viewModel: FinanceViewModel) {
                         .fillMaxSize()
                         .padding(top = innerPadding.calculateTopPadding(), bottom = 0.dp)
                 ) {
-                    Crossfade(targetState = activeTab, label = "tabTransition") { tab ->
+                    AnimatedContent(
+                        targetState = activeTab,
+                        label = "tabTransition",
+                        transitionSpec = {
+                            (fadeIn(
+                                animationSpec = spring(
+                                    stiffness = Spring.StiffnessMediumLow,
+                                    visibilityThreshold = null
+                                )
+                            ) + slideInVertically(
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioLowBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                ),
+                                initialOffsetY = { it / 24 }
+                            )) togetherWith fadeOut(
+                                animationSpec = spring(stiffness = Spring.StiffnessHigh)
+                            )
+                        }
+                    ) { tab ->
                         when (tab) {
                             "home" -> HomeScreen(
                                 viewModel = viewModel,
@@ -330,507 +353,20 @@ fun AurenApp(viewModel: FinanceViewModel) {
                 }
             )
         }
-
-        // Semitransparent dimming overlay
-        if (showSideBar) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { showSideBar = false }
-                    .zIndex(100f)
-            )
-        }
-
-        // Sliding navigation side bar drawer panel
-        AnimatedVisibility(
+        // Settings sidebar — list → detail navigation, see SettingsSidebar.kt
+        SettingsSidebar(
             visible = showSideBar,
-            enter = slideInHorizontally(initialOffsetX = { -it }) + fadeIn(),
-            exit = slideOutHorizontally(targetOffsetX = { -it }) + fadeOut(),
-            modifier = Modifier
-                .fillMaxHeight()
-                .fillMaxWidth(0.85f)
-                .background(LuxDarkGray)
-                .border(1.dp, LuxGoldChange.copy(alpha = 0.25f))
-                .clickable(enabled = false) {}
-                .zIndex(101f)
-        ) {
-            val context = LocalContext.current
-            val prefs = remember(context) { context.getSharedPreferences("firebase_auth_prefs", android.content.Context.MODE_PRIVATE) }
-            val localUserEmail = if (firebaseUserEmail.isNotBlank()) firebaseUserEmail else "Guest@auren.io"
-
-            // Real profile control states
-            var editedCurrency by remember { mutableStateOf(profile?.currency ?: "₹") }
-            var editedObjective by remember { mutableStateOf(profile?.primaryObjective ?: "Control spending") }
-            var editedMode by remember { mutableStateOf(profile?.appMode ?: "Strict Mode") }
-            var editedSalary by remember { mutableStateOf(profile?.salaryAmount?.toInt()?.toString() ?: "60000") }
-            var editedBuffer by remember { mutableStateOf(profile?.safetyBuffer?.toInt()?.toString() ?: "2000") }
-
-            // Sync state to local form
-            LaunchedEffect(profile) {
-                if (profile != null) {
-                    editedCurrency = profile!!.currency
-                    editedObjective = profile!!.primaryObjective
-                    editedMode = profile!!.appMode
-                    editedSalary = profile!!.salaryAmount.toInt().toString()
-                    editedBuffer = profile!!.safetyBuffer.toInt().toString()
-                }
+            profile = profile,
+            userEmail = if (firebaseUserEmail.isNotBlank()) firebaseUserEmail else "Guest@auren.io",
+            viewModel = viewModel,
+            onDismiss = { showSideBar = false },
+            onLogout = {
+                prefs.edit().putBoolean("is_authed", false).putString("authed_email", "").apply()
+                isFirebaseAuthed = false
+                firebaseUserEmail = ""
             }
+        )
 
-            var sidebarActiveTab by remember { mutableStateOf(0) } // 0 = Vault Core, 1 = Preferences
-
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // Sidebar Header with close indicator
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(LuxGoldLight),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "A",
-                                color = LuxGoldChange,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "AUREN SECURE HUB",
-                                color = LuxGoldChange,
-                                fontSize = 11.sp,
-                                letterSpacing = 1.5.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Integrated Settings",
-                                color = LuxIvory.copy(alpha = 0.7f),
-                                fontSize = 12.sp
-                            )
-                        }
-                    }
-                    IconButton(onClick = { showSideBar = false }) {
-                        Icon(imageVector = Icons.Default.Close, contentDescription = "Close Sidebar", tint = LuxMuted)
-                    }
-                }
-
-                // Modern Luxury Segmented Tabs
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(LuxCardGray, RoundedCornerShape(12.dp))
-                        .padding(4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (sidebarActiveTab == 0) LuxGoldChange else Color.Transparent)
-                            .clickable { sidebarActiveTab = 0 }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "VAULT CORE",
-                            color = if (sidebarActiveTab == 0) LuxBlack else LuxIvory,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (sidebarActiveTab == 1) LuxGoldChange else Color.Transparent)
-                            .clickable { sidebarActiveTab = 1 }
-                            .padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "PREFERENCES",
-                            color = if (sidebarActiveTab == 1) LuxBlack else LuxIvory,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp
-                        )
-                    }
-                }
-
-                HorizontalDivider(color = LuxCardGray, thickness = 1.dp)
-
-                // Render content based on active tab
-                if (sidebarActiveTab == 0) {
-                    // Separate page / scroll view for Vault Settings
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Text(
-                            text = "VAULT PROFILE CONFIGURATION",
-                            color = LuxGoldChange,
-                            style = Typography.labelLarge,
-                            letterSpacing = 1.5.sp,
-                            fontSize = 11.sp
-                        )
-
-                        // Fixed Monthly Income
-                        Text(text = "DYNAMIC FIXED MONTHLY INCOME", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        OutlinedTextField(
-                            value = editedSalary,
-                            onValueChange = { input ->
-                                if (input.all { it.isDigit() }) {
-                                    editedSalary = input
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("sidebar_salary_input"),
-                            singleLine = true,
-                            textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = LuxGoldChange,
-                                unfocusedBorderColor = LuxCardGray,
-                                focusedLabelColor = LuxGoldChange,
-                                cursorColor = LuxGoldChange
-                            ),
-                            leadingIcon = { Text(text = editedCurrency, color = LuxGoldChange, fontWeight = FontWeight.Bold) },
-                            shape = RoundedCornerShape(8.dp)
-                        )
-
-                        // Safety Buffer
-                        Text(text = "MONTHLY SEGREGATED RESERVE BUFFER", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        OutlinedTextField(
-                            value = editedBuffer,
-                            onValueChange = { input ->
-                                if (input.all { it.isDigit() }) {
-                                    editedBuffer = input
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("sidebar_buffer_input"),
-                            singleLine = true,
-                            textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = LuxGoldChange,
-                                unfocusedBorderColor = LuxCardGray,
-                                focusedLabelColor = LuxGoldChange,
-                                cursorColor = LuxGoldChange
-                            ),
-                            leadingIcon = { Text(text = editedCurrency, color = LuxGoldChange, fontWeight = FontWeight.Bold) },
-                            shape = RoundedCornerShape(8.dp)
-                        )
-
-                        // Native Currency
-                        Text(text = "NATIVE CURRENCY SYMBOL", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf("₹", "$", "€", "£").forEach { sym ->
-                                val isSel = editedCurrency == sym
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSel) LuxGoldChange else LuxCardGray)
-                                        .border(1.dp, if (isSel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                                        .clickable { editedCurrency = sym }
-                                        .padding(vertical = 10.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = sym,
-                                        color = if (isSel) LuxBlack else LuxIvory,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp
-                                    )
-                                }
-                            }
-                        }
-
-                        // Algorithmic Mode
-                        Text(text = "ALGORITHMIC APP BUDGET MODE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("Strict Mode", "Balanced Mode", "Relaxed Mode").forEach { md ->
-                                val isSel = editedMode == md
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSel) LuxGoldChange else LuxCardGray)
-                                        .border(1.dp, if (isSel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                                        .clickable { editedMode = md }
-                                        .padding(vertical = 8.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = md.replace(" Mode", ""),
-                                        color = if (isSel) LuxBlack else LuxIvory,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
-                        }
-
-                        // Wealth Objective
-                        Text(text = "PRIMARY WEALTH OBJECTIVE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            listOf("Control spending", "Start saving", "Clear debt", "Grow wealth").forEach { obj ->
-                                val isSel = editedObjective == obj
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSel) LuxGoldChange else LuxCardGray)
-                                        .border(1.dp, if (isSel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                                        .clickable { editedObjective = obj }
-                                        .padding(vertical = 8.dp, horizontal = 12.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = obj.uppercase(),
-                                            color = if (isSel) LuxBlack else LuxIvory,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp
-                                        )
-                                        if (isSel) {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = LuxBlack,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Submit profile button
-                        Button(
-                            onClick = {
-                                val salVal = editedSalary.toDoubleOrNull() ?: 60000.0
-                                val bufVal = editedBuffer.toDoubleOrNull() ?: 2000.0
-                                viewModel.updateProfile(
-                                    currency = editedCurrency,
-                                    objective = editedObjective,
-                                    mode = editedMode,
-                                    salary = salVal,
-                                    buffer = bufVal,
-                                    isCompleted = true
-                                )
-                                showSideBar = false
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("save_sidebar_profile_button"),
-                            colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(imageVector = Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(text = "COMMIT PROFILE CONFIG", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-                        }
-                    }
-                } else {
-                    // Separate page / scroll view for System Preferences (dark/light, language preferences)
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Text(
-                            text = "SYSTEM CONFIG & SECURITY",
-                            color = LuxGoldChange,
-                            style = Typography.labelLarge,
-                            letterSpacing = 1.5.sp,
-                            fontSize = 11.sp
-                        )
-
-                        // System language preference
-                        Text(text = "SYSTEM LANGUAGE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf("English", "Hinglish", "Hindi").forEach { lng ->
-                                val isSel = langOption == lng
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSel) LuxGoldChange else LuxCardGray)
-                                        .border(1.dp, if (isSel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                                        .clickable { langOption = lng }
-                                        .padding(vertical = 8.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = if (lng == "English") "EN" else if (lng == "Hinglish") "HNG" else "HI",
-                                        color = if (isSel) LuxBlack else LuxIvory,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
-                                    )
-                                }
-                            }
-                        }
-
-                        // Dark/light mode switcher
-                        Text(text = "INTERFACE THEME STYLE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(LuxCardGray)
-                                .clickable { isDarkThemeGlobal = !isDarkThemeGlobal }
-                                .padding(12.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = if (isDarkThemeGlobal) Icons.Default.NightsStay else Icons.Default.WbSunny,
-                                        contentDescription = null,
-                                        tint = LuxGoldChange,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(10.dp))
-                                    Text(
-                                        text = if (isDarkThemeGlobal) "LUXURY DEEP SPACE DARK" else "HIGHCONTRAST MODERN LIGHT",
-                                        color = LuxIvory,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                                Switch(
-                                    checked = isDarkThemeGlobal,
-                                    onCheckedChange = { isDarkThemeGlobal = it },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = LuxGoldChange,
-                                        checkedTrackColor = LuxGoldLight,
-                                        uncheckedThumbColor = LuxMuted,
-                                        uncheckedTrackColor = LuxCardGray
-                                    ),
-                                    modifier = Modifier.scale(0.85f)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Session identity card
-                        Text(text = "SESSION SHIELD", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = LuxCardGray),
-                            border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.15f))
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(40.dp)
-                                        .background(LuxGoldChange, androidx.compose.foundation.shape.CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = localUserEmail.firstOrNull()?.uppercase()?.toString() ?: "U",
-                                        color = LuxBlack,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 16.sp
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = localUserEmail,
-                                        color = LuxIvory,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 12.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.dp)
-                                                .background(LuxGreen, androidx.compose.foundation.shape.CircleShape)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = if (localUserEmail.contains("guest", true) || localUserEmail.contains("अतिथि", true) || localUserEmail == "Guest@auren.io") 
-                                                "GUEST SHELL ACTIVE" else "FIREBASE SYNCHRONIZED", 
-                                            color = LuxGreen, 
-                                            fontSize = 9.sp, 
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Secure logout button
-                        Text(text = "VAULT PROTECTION SHELL", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
-                        OutlinedButton(
-                            onClick = {
-                                prefs.edit().putBoolean("is_authed", false).putString("authed_email", "").apply()
-                                isFirebaseAuthed = false
-                                firebaseUserEmail = ""
-                                showSideBar = false
-                            },
-                            modifier = Modifier.fillMaxWidth().testTag("sidebar_logout_button"),
-                            border = BorderStroke(1.2.dp, LuxError),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = LuxError),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(text = "SECURE LOGOUT", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -2452,6 +1988,7 @@ fun HomeScreen(
     val profileState by viewModel.profile.collectAsStateWithLifecycle()
     val goalsState by viewModel.goals.collectAsStateWithLifecycle()
     val transactionsState by viewModel.transactions.collectAsStateWithLifecycle()
+    val dashboardConfig by viewModel.dashboardConfig.collectAsStateWithLifecycle()
 
     var showSideBar by remember { mutableStateOf(false) }
 
@@ -2783,36 +2320,42 @@ fun HomeScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             // Predictive End-of-Month Savings Widget
-            CinematicEntranceContainer(delayMillis = 350) {
-                PredictiveEomSavingsWidget(
-                    salary = salaryVal,
-                    transactions = transactionsState ?: emptyList(),
-                    bills = bills,
-                    currency = currency
-                )
-            }
+            if (dashboardConfig.isVisible(com.example.data.WidgetId.PredictiveSavings)) {
+                CinematicEntranceContainer(delayMillis = 350) {
+                    PredictiveEomSavingsWidget(
+                        salary = salaryVal,
+                        transactions = transactionsState ?: emptyList(),
+                        bills = bills,
+                        currency = currency
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(24.dp))
+            }
 
             // 30-Day Spending Trends (Recharts-Style)
-            CinematicEntranceContainer(delayMillis = 450) {
-                Last30DaysSpendingTrendsChart(
-                    transactions = transactionsState ?: emptyList(),
-                    currency = currency
-                )
-            }
+            if (dashboardConfig.isVisible(com.example.data.WidgetId.SpendingTrendsChart)) {
+                CinematicEntranceContainer(delayMillis = 450) {
+                    Last30DaysSpendingTrendsChart(
+                        transactions = transactionsState ?: emptyList(),
+                        currency = currency
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(24.dp))
+            }
 
             // Spending vs Savings Visual allocation (Task 4)
-            CinematicEntranceContainer(delayMillis = 550) {
-                GeometricSpendingVsSavingsChart(
-                    transactions = transactionsState ?: emptyList(),
-                    currency = currency
-                )
-            }
+            if (dashboardConfig.isVisible(com.example.data.WidgetId.SpendingVsSavingsChart)) {
+                CinematicEntranceContainer(delayMillis = 550) {
+                    GeometricSpendingVsSavingsChart(
+                        transactions = transactionsState ?: emptyList(),
+                        currency = currency
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(24.dp))
+            }
 
             // Action Deck
             CinematicEntranceContainer(delayMillis = 650) {
@@ -2848,16 +2391,18 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            CinematicEntranceContainer(delayMillis = 750) {
-                BankFeedSyncWidget(
-                    accounts = accounts,
-                    currency = currency,
-                    viewModel = viewModel,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+            if (dashboardConfig.isVisible(com.example.data.WidgetId.BankFeedSync)) {
+                CinematicEntranceContainer(delayMillis = 750) {
+                    BankFeedSyncWidget(
+                        accounts = accounts,
+                        currency = currency,
+                        viewModel = viewModel,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(24.dp))
+            }
 
             // Recurring flagged bills widget (Task 3)
             var editingBillDialogState by remember { mutableStateOf<BillSubscription?>(null) }
@@ -5211,7 +4756,7 @@ fun GoalsSubView(
                             ) {
                                 Column {
                                     Text(text = g.name.uppercase(), color = LuxIvory, fontWeight = FontWeight.Bold)
-                                    Text(text = "Priority: ${g.priority} • Saved: $currency${String.format("%,.0f2", g.currentAmount)} / $currency${String.format("%,.0f2", g.targetAmount)}", color = LuxMuted, fontSize = 12.sp)
+                                    Text(text = "Priority: ${g.priority} • Saved: ${MoneyFormat.compact(g.currentAmount, currency)} / ${MoneyFormat.compact(g.targetAmount, currency)}", color = LuxMuted, fontSize = 12.sp)
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                     IconButton(onClick = { onDelete(g) }) {
