@@ -99,10 +99,15 @@ fun AurenApp(viewModel: FinanceViewModel) {
          )
     } else if (!isProfileLoaded) {
          // Secure routing: Show premium loading gate while loading user profile from database
+         val cinematicLoadingBackground = if (isDarkThemeGlobal) {
+             Brush.verticalGradient(colors = listOf(Color(0xFF130E20), Color(0xFF08060A)))
+         } else {
+             Brush.verticalGradient(colors = listOf(Color(0xFFFAF6FE), Color(0xFFEDE4F5)))
+         }
          Box(
              modifier = Modifier
                  .fillMaxSize()
-                 .background(LuxBlack),
+                 .background(cinematicLoadingBackground),
              contentAlignment = Alignment.Center
          ) {
              Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -112,15 +117,17 @@ fun AurenApp(viewModel: FinanceViewModel) {
              }
          }
     } else if (profile == null || !profile!!.isOnboarded) {
-        OnboardingFlow(
-            profile = profile,
-            viewModel = viewModel,
-            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden ->
-                viewModel.onboardUser(cur, obj, md, sal, pay, bal, buf, hidden)
-            }
-        )
+        OnboardingScreen(onOnboard = { cur, obj, md, sal, pay, bal, buf ->
+            viewModel.onboardUser(cur, obj, md, sal, pay, bal, buf)
+        })
     } else {
         var itemPendingForDeletion by remember { mutableStateOf<Any?>(null) }
+
+        val cinematicBackground = if (isDarkThemeGlobal) {
+            Brush.verticalGradient(colors = listOf(Color(0xFF130E20), Color(0xFF08060A)))
+         } else {
+             Brush.verticalGradient(colors = listOf(Color(0xFFFAF6FE), Color(0xFFEDE4F5)))
+         }
 
         Scaffold(
             floatingActionButton = {
@@ -136,41 +143,19 @@ fun AurenApp(viewModel: FinanceViewModel) {
                     }
                 }
             },
-            containerColor = LuxBlack
+            containerColor = Color.Transparent
         ) { innerPadding ->
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(LuxBlack)
+                    .background(cinematicBackground)
             ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(top = innerPadding.calculateTopPadding(), bottom = 0.dp)
                 ) {
-                    AnimatedContent(
-                        targetState = activeTab,
-                        label = "tabTransition",
-                        transitionSpec = {
-                            // Silky spring-based crossfade with a subtle 12px vertical glide.
-                            // StiffnessMediumLow + DampingRatioMediumBouncy ≈ premium feel
-                            // without the overshoot of a default spring.
-                            (fadeIn(
-                                animationSpec = spring(
-                                    stiffness = Spring.StiffnessMediumLow,
-                                    visibilityThreshold = null
-                                )
-                            ) + slideInVertically(
-                                animationSpec = spring(
-                                    dampingRatio = Spring.DampingRatioLowBouncy,
-                                    stiffness = Spring.StiffnessMediumLow
-                                ),
-                                initialOffsetY = { it / 24 }
-                            )) togetherWith fadeOut(
-                                animationSpec = spring(stiffness = Spring.StiffnessHigh)
-                            )
-                        }
-                    ) { tab ->
+                    Crossfade(targetState = activeTab, label = "tabTransition") { tab ->
                         when (tab) {
                             "home" -> HomeScreen(
                                 viewModel = viewModel,
@@ -346,19 +331,506 @@ fun AurenApp(viewModel: FinanceViewModel) {
             )
         }
 
-        // Settings sidebar — list → detail navigation, see SettingsSidebar.kt
-        SettingsSidebar(
+        // Semitransparent dimming overlay
+        if (showSideBar) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { showSideBar = false }
+                    .zIndex(100f)
+            )
+        }
+
+        // Sliding navigation side bar drawer panel
+        AnimatedVisibility(
             visible = showSideBar,
-            profile = profile,
-            userEmail = if (firebaseUserEmail.isNotBlank()) firebaseUserEmail else "Guest@auren.io",
-            viewModel = viewModel,
-            onDismiss = { showSideBar = false },
-            onLogout = {
-                prefs.edit().putBoolean("is_authed", false).putString("authed_email", "").apply()
-                isFirebaseAuthed = false
-                firebaseUserEmail = ""
+            enter = slideInHorizontally(initialOffsetX = { -it }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { -it }) + fadeOut(),
+            modifier = Modifier
+                .fillMaxHeight()
+                .fillMaxWidth(0.85f)
+                .background(LuxDarkGray)
+                .border(1.dp, LuxGoldChange.copy(alpha = 0.25f))
+                .clickable(enabled = false) {}
+                .zIndex(101f)
+        ) {
+            val context = LocalContext.current
+            val prefs = remember(context) { context.getSharedPreferences("firebase_auth_prefs", android.content.Context.MODE_PRIVATE) }
+            val localUserEmail = if (firebaseUserEmail.isNotBlank()) firebaseUserEmail else "Guest@auren.io"
+
+            // Real profile control states
+            var editedCurrency by remember { mutableStateOf(profile?.currency ?: "₹") }
+            var editedObjective by remember { mutableStateOf(profile?.primaryObjective ?: "Control spending") }
+            var editedMode by remember { mutableStateOf(profile?.appMode ?: "Strict Mode") }
+            var editedSalary by remember { mutableStateOf(profile?.salaryAmount?.toInt()?.toString() ?: "60000") }
+            var editedBuffer by remember { mutableStateOf(profile?.safetyBuffer?.toInt()?.toString() ?: "2000") }
+
+            // Sync state to local form
+            LaunchedEffect(profile) {
+                if (profile != null) {
+                    editedCurrency = profile!!.currency
+                    editedObjective = profile!!.primaryObjective
+                    editedMode = profile!!.appMode
+                    editedSalary = profile!!.salaryAmount.toInt().toString()
+                    editedBuffer = profile!!.safetyBuffer.toInt().toString()
+                }
             }
-        )
+
+            var sidebarActiveTab by remember { mutableStateOf(0) } // 0 = Vault Core, 1 = Preferences
+
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Sidebar Header with close indicator
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(LuxGoldLight),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "A",
+                                color = LuxGoldChange,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column {
+                            Text(
+                                text = "AUREN SECURE HUB",
+                                color = LuxGoldChange,
+                                fontSize = 11.sp,
+                                letterSpacing = 1.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Integrated Settings",
+                                color = LuxIvory.copy(alpha = 0.7f),
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                    IconButton(onClick = { showSideBar = false }) {
+                        Icon(imageVector = Icons.Default.Close, contentDescription = "Close Sidebar", tint = LuxMuted)
+                    }
+                }
+
+                // Modern Luxury Segmented Tabs
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(LuxCardGray, RoundedCornerShape(12.dp))
+                        .padding(4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (sidebarActiveTab == 0) LuxGoldChange else Color.Transparent)
+                            .clickable { sidebarActiveTab = 0 }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "VAULT CORE",
+                            color = if (sidebarActiveTab == 0) LuxBlack else LuxIvory,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (sidebarActiveTab == 1) LuxGoldChange else Color.Transparent)
+                            .clickable { sidebarActiveTab = 1 }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "PREFERENCES",
+                            color = if (sidebarActiveTab == 1) LuxBlack else LuxIvory,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = LuxCardGray, thickness = 1.dp)
+
+                // Render content based on active tab
+                if (sidebarActiveTab == 0) {
+                    // Separate page / scroll view for Vault Settings
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text(
+                            text = "VAULT PROFILE CONFIGURATION",
+                            color = LuxGoldChange,
+                            style = Typography.labelLarge,
+                            letterSpacing = 1.5.sp,
+                            fontSize = 11.sp
+                        )
+
+                        // Fixed Monthly Income
+                        Text(text = "DYNAMIC FIXED MONTHLY INCOME", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        OutlinedTextField(
+                            value = editedSalary,
+                            onValueChange = { input ->
+                                if (input.all { it.isDigit() }) {
+                                    editedSalary = input
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("sidebar_salary_input"),
+                            singleLine = true,
+                            textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = LuxGoldChange,
+                                unfocusedBorderColor = LuxCardGray,
+                                focusedLabelColor = LuxGoldChange,
+                                cursorColor = LuxGoldChange
+                            ),
+                            leadingIcon = { Text(text = editedCurrency, color = LuxGoldChange, fontWeight = FontWeight.Bold) },
+                            shape = RoundedCornerShape(8.dp)
+                        )
+
+                        // Safety Buffer
+                        Text(text = "MONTHLY SEGREGATED RESERVE BUFFER", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        OutlinedTextField(
+                            value = editedBuffer,
+                            onValueChange = { input ->
+                                if (input.all { it.isDigit() }) {
+                                    editedBuffer = input
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("sidebar_buffer_input"),
+                            singleLine = true,
+                            textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = LuxGoldChange,
+                                unfocusedBorderColor = LuxCardGray,
+                                focusedLabelColor = LuxGoldChange,
+                                cursorColor = LuxGoldChange
+                            ),
+                            leadingIcon = { Text(text = editedCurrency, color = LuxGoldChange, fontWeight = FontWeight.Bold) },
+                            shape = RoundedCornerShape(8.dp)
+                        )
+
+                        // Native Currency
+                        Text(text = "NATIVE CURRENCY SYMBOL", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf("₹", "$", "€", "£").forEach { sym ->
+                                val isSel = editedCurrency == sym
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSel) LuxGoldChange else LuxCardGray)
+                                        .border(1.dp, if (isSel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                        .clickable { editedCurrency = sym }
+                                        .padding(vertical = 10.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = sym,
+                                        color = if (isSel) LuxBlack else LuxIvory,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        // Algorithmic Mode
+                        Text(text = "ALGORITHMIC APP BUDGET MODE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("Strict Mode", "Balanced Mode", "Relaxed Mode").forEach { md ->
+                                val isSel = editedMode == md
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSel) LuxGoldChange else LuxCardGray)
+                                        .border(1.dp, if (isSel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                        .clickable { editedMode = md }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = md.replace(" Mode", ""),
+                                        color = if (isSel) LuxBlack else LuxIvory,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        // Wealth Objective
+                        Text(text = "PRIMARY WEALTH OBJECTIVE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("Control spending", "Start saving", "Clear debt", "Grow wealth").forEach { obj ->
+                                val isSel = editedObjective == obj
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSel) LuxGoldChange else LuxCardGray)
+                                        .border(1.dp, if (isSel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                        .clickable { editedObjective = obj }
+                                        .padding(vertical = 8.dp, horizontal = 12.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = obj.uppercase(),
+                                            color = if (isSel) LuxBlack else LuxIvory,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                        if (isSel) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = LuxBlack,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Submit profile button
+                        Button(
+                            onClick = {
+                                val salVal = editedSalary.toDoubleOrNull() ?: 60000.0
+                                val bufVal = editedBuffer.toDoubleOrNull() ?: 2000.0
+                                viewModel.updateProfile(
+                                    currency = editedCurrency,
+                                    objective = editedObjective,
+                                    mode = editedMode,
+                                    salary = salVal,
+                                    buffer = bufVal,
+                                    isCompleted = true
+                                )
+                                showSideBar = false
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("save_sidebar_profile_button"),
+                            colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(imageVector = Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(text = "COMMIT PROFILE CONFIG", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                } else {
+                    // Separate page / scroll view for System Preferences (dark/light, language preferences)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text(
+                            text = "SYSTEM CONFIG & SECURITY",
+                            color = LuxGoldChange,
+                            style = Typography.labelLarge,
+                            letterSpacing = 1.5.sp,
+                            fontSize = 11.sp
+                        )
+
+                        // System language preference
+                        Text(text = "SYSTEM LANGUAGE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf("English", "Hinglish", "Hindi").forEach { lng ->
+                                val isSel = langOption == lng
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSel) LuxGoldChange else LuxCardGray)
+                                        .border(1.dp, if (isSel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                        .clickable { langOption = lng }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = if (lng == "English") "EN" else if (lng == "Hinglish") "HNG" else "HI",
+                                        color = if (isSel) LuxBlack else LuxIvory,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+
+                        // Dark/light mode switcher
+                        Text(text = "INTERFACE THEME STYLE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(LuxCardGray)
+                                .clickable { isDarkThemeGlobal = !isDarkThemeGlobal }
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = if (isDarkThemeGlobal) Icons.Default.NightsStay else Icons.Default.WbSunny,
+                                        contentDescription = null,
+                                        tint = LuxGoldChange,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        text = if (isDarkThemeGlobal) "LUXURY DEEP SPACE DARK" else "HIGHCONTRAST MODERN LIGHT",
+                                        color = LuxIvory,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Switch(
+                                    checked = isDarkThemeGlobal,
+                                    onCheckedChange = { isDarkThemeGlobal = it },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = LuxGoldChange,
+                                        checkedTrackColor = LuxGoldLight,
+                                        uncheckedThumbColor = LuxMuted,
+                                        uncheckedTrackColor = LuxCardGray
+                                    ),
+                                    modifier = Modifier.scale(0.85f)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Session identity card
+                        Text(text = "SESSION SHIELD", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = LuxCardGray),
+                            border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.15f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .background(LuxGoldChange, androidx.compose.foundation.shape.CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = localUserEmail.firstOrNull()?.uppercase()?.toString() ?: "U",
+                                        color = LuxBlack,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 16.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = localUserEmail,
+                                        color = LuxIvory,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .background(LuxGreen, androidx.compose.foundation.shape.CircleShape)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = if (localUserEmail.contains("guest", true) || localUserEmail.contains("अतिथि", true) || localUserEmail == "Guest@auren.io") 
+                                                "GUEST SHELL ACTIVE" else "FIREBASE SYNCHRONIZED", 
+                                            color = LuxGreen, 
+                                            fontSize = 9.sp, 
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Secure logout button
+                        Text(text = "VAULT PROTECTION SHELL", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.Bold)
+                        OutlinedButton(
+                            onClick = {
+                                prefs.edit().putBoolean("is_authed", false).putString("authed_email", "").apply()
+                                isFirebaseAuthed = false
+                                firebaseUserEmail = ""
+                                showSideBar = false
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("sidebar_logout_button"),
+                            border = BorderStroke(1.2.dp, LuxError),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = LuxError),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(imageVector = Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(text = "SECURE LOGOUT", fontWeight = FontWeight.ExtraBold, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1464,10 +1936,16 @@ fun OnboardingScreen(onOnboard: (String, String, String, Double, Int, Double, Do
     var initialBalance by remember { mutableStateOf("25000") }
     var bufferAmount by remember { mutableStateOf("2000") }
 
+    val onboardingBg = if (isDarkThemeGlobal) {
+        Brush.verticalGradient(colors = listOf(Color(0xFF130E20), Color(0xFF08060A)))
+    } else {
+        Brush.verticalGradient(colors = listOf(Color(0xFFFAF6FE), Color(0xFFEDE4F5)))
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(LuxBlack)
+            .background(onboardingBg)
             .padding(24.dp)
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,
@@ -1827,6 +2305,133 @@ fun QuickEditBillDialog(
     }
 }
 
+// ---------------- CINEMATIC WEB-INSPIRED ANIMATORS & GLASS SURFACES ----------------
+@Composable
+fun CinematicEntranceContainer(
+    delayMillis: Int,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(delayMillis.toLong())
+        visible = true
+    }
+    
+    val animatedAlpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = 800,
+            easing = EaseOutCubic
+        ),
+        label = "fade"
+    )
+    
+    val animatedOffsetY by animateDpAsState(
+        targetValue = if (visible) 0.dp else 40.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessLow
+        ),
+        label = "slide"
+    )
+
+    Box(
+        modifier = modifier
+            .graphicsLayer {
+                alpha = animatedAlpha
+                translationY = animatedOffsetY.toPx()
+            }
+    ) {
+        content()
+    }
+}
+
+@Composable
+fun CinematicGlassCard(
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(24.dp),
+    content: @Composable ColumnScope.() -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val isHovered by interactionSource.collectIsHoveredAsState()
+
+    val scale by animateFloatAsState(
+        targetValue = when {
+            isPressed -> 0.98f
+            isHovered -> 1.02f
+            else -> 1.0f
+        },
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "scale"
+    )
+
+    val glassBg = if (isDarkThemeGlobal) {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0x2B21173C),
+                Color(0x1B0B0813)
+            )
+        )
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0xD8FFFFFF),
+                Color(0xA5F3ECFC)
+            )
+        )
+    }
+
+    val glassBorderBrush = if (isDarkThemeGlobal) {
+        Brush.linearGradient(
+            colors = listOf(
+                LuxGoldChange.copy(alpha = 0.40f),
+                Color.White.copy(alpha = 0.08f),
+                LuxGoldChange.copy(alpha = 0.20f)
+            )
+        )
+    } else {
+        Brush.linearGradient(
+            colors = listOf(
+                Color.White.copy(alpha = 0.9f),
+                LuxGoldChange.copy(alpha = 0.25f),
+                Color.White.copy(alpha = 0.4f)
+            )
+        )
+    }
+
+    Card(
+        modifier = modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        interactionSource = interactionSource,
+                        indication = LocalIndication.current,
+                        onClick = onClick
+                    )
+                } else {
+                    Modifier
+                }
+            ),
+        shape = shape,
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        border = BorderStroke(1.2.dp, glassBorderBrush)
+    ) {
+        Column(
+            modifier = Modifier
+                .background(glassBg)
+                .fillMaxWidth(),
+            content = content
+        )
+    }
+}
+
 // ---------------- HOME VIEW TAB ----------------
 @Composable
 fun HomeScreen(
@@ -1847,7 +2452,6 @@ fun HomeScreen(
     val profileState by viewModel.profile.collectAsStateWithLifecycle()
     val goalsState by viewModel.goals.collectAsStateWithLifecycle()
     val transactionsState by viewModel.transactions.collectAsStateWithLifecycle()
-    val dashboardConfig by viewModel.dashboardConfig.collectAsStateWithLifecycle()
 
     var showSideBar by remember { mutableStateOf(false) }
 
@@ -1858,420 +2462,18 @@ fun HomeScreen(
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
-            // Decluttered header — one anchor on each side, generous breathing room.
-            // Security indicator is moved into the sidebar to free the home eye-line
-            // (AGENT.md §5 readability).
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 20.dp),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = LuxDarkGray.copy(alpha = 0.6f)),
-                border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.2f))
-            ) {
-                Row(
+            val salaryVal = profileState?.salaryAmount ?: 60000.0
+            val bufferVal = profileState?.safetyBuffer ?: 2000.0
+            val totalBillsVal = bills.sumOf { it.amount }
+            val totalGoalsVal = goalsState?.sumOf { it.currentAmount } ?: 0.0
+
+            // Premium Modernized Header
+            CinematicEntranceContainer(delayMillis = 50) {
+                CinematicGlassCard(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = onSettingsClick,
-                        modifier = Modifier.testTag("open_sidebar_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Menu,
-                            contentDescription = "Open Sidebar Menu",
-                            tint = LuxGoldChange,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    Text(
-                        text = t("Auren Money Hub", "ऑरेन मनी हब", "Auren Hub"),
-                        style = Typography.titleLarge,
-                        color = LuxIvory,
-                        fontWeight = FontWeight.Bold
-                    )
-                    // Subtle secure dot — tiny, on the right, doesn't compete with the title.
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .background(LuxGreen, androidx.compose.foundation.shape.CircleShape)
-                    )
-                }
-            }
-    
-            Spacer(modifier = Modifier.height(8.dp))
-
-        // Safe To Spend display
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(28.dp),
-            colors = CardDefaults.cardColors(containerColor = LuxGoldLight),
-            border = BorderStroke(1.dp, Color(0xFFCAC4D0).copy(alpha = 0.4f))
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Rotated geometric badge from design template replaced with animated breathing Auren Logo
-                Box(
-                    modifier = Modifier
-                        .size(64.dp)
-                        .background(color = LuxBlack, shape = RoundedCornerShape(16.dp))
-                        .border(1.dp, LuxGoldChange.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
-                        .padding(4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AurenLogo(modifier = Modifier.size(56.dp))
-                }
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Text(
-                    text = t("SAFE TO SPEND TODAY", "आज खर्च करने के लिए सुरक्षित मात्रा", "Safe to Spend Today"),
-                    style = Typography.labelLarge,
-                    color = if (isDarkThemeGlobal) LuxIvory else Color(0xFF21005D), // Dynamically supports eye contrast
-                    letterSpacing = 2.sp
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "$currency${String.format("%,.2f", safeToSpendToday)}",
-                    style = Typography.displayLarge,
-                    color = if (isDarkThemeGlobal) LuxIvory else Color(0xFF21005D), // Dynamically supports eye contrast
-                    fontWeight = FontWeight.Bold
-                )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Divider(color = LuxCardGray)
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceAround
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(text = "AVAILABLE BUFFER", fontSize = 11.sp, color = LuxMuted)
-                        Text(text = "$currency${String.format("%,.0f", totalUsableBalance)}", fontWeight = FontWeight.Bold, color = LuxIvory)
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(text = "TENURE REMAINING", fontSize = 11.sp, color = LuxMuted)
-                        Text(text = "$daysRemaining days left", fontWeight = FontWeight.Bold, color = LuxIvory)
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Geometric Inspired Grid Layout (Task 4)
-        Text(text = "MONETARY MATRIX", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
-        Spacer(modifier = Modifier.height(10.dp))
-
-        val salaryVal = profileState?.salaryAmount ?: 60000.0
-        val bufferVal = profileState?.safetyBuffer ?: 2000.0
-        val totalBillsVal = bills.sumOf { it.amount }
-        val totalGoalsVal = goalsState?.sumOf { it.currentAmount } ?: 0.0
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Column 1
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // Widget A: Income
-                InteractiveGeometricCard(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .background(color = LuxGoldChange, shape = RoundedCornerShape(10.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ArrowUpward,
-                                contentDescription = null,
-                                tint = LuxBlack,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(text = "MONTHLY SALARY", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.SemiBold)
-                        Text(text = "$currency${String.format("%,.0f", salaryVal)}", style = Typography.titleMedium, fontWeight = FontWeight.Bold, color = LuxIvory)
-                    }
-                }
-
-                // Widget B: Bills
-                InteractiveGeometricCard(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .background(color = LuxGoldChange, shape = RoundedCornerShape(10.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.DateRange,
-                                contentDescription = null,
-                                tint = LuxBlack,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(text = "MONTHLY BILLS", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.SemiBold)
-                        Text(text = "$currency${String.format("%,.0f", totalBillsVal)}", style = Typography.titleMedium, fontWeight = FontWeight.Bold, color = LuxIvory)
-                    }
-                }
-            }
-
-            // Column 2
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // Widget A: Savings Goals
-                InteractiveGeometricCard(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .background(color = LuxGoldChange, shape = RoundedCornerShape(10.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.TrendingUp,
-                                contentDescription = null,
-                                tint = LuxBlack,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(text = "LOCKED SAVINGS", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.SemiBold)
-                        Text(text = "$currency${String.format("%,.0f", totalGoalsVal)}", style = Typography.titleMedium, fontWeight = FontWeight.Bold, color = LuxIvory)
-                    }
-                }
-
-                // Widget B: Safety Buffer
-                InteractiveGeometricCard(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .background(color = LuxGoldChange, shape = RoundedCornerShape(10.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Shield,
-                                contentDescription = null,
-                                tint = LuxBlack,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(text = "SAFETY RESERVE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.SemiBold)
-                        Text(text = "$currency${String.format("%,.0f", bufferVal)}", style = Typography.titleMedium, fontWeight = FontWeight.Bold, color = LuxIvory)
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Predictive End-of-Month Savings Widget
-        if (dashboardConfig.isVisible(com.example.data.WidgetId.PredictiveSavings)) {
-            PredictiveEomSavingsWidget(
-                salary = salaryVal,
-                transactions = transactionsState ?: emptyList(),
-                bills = bills,
-                currency = currency
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-
-        // 30-Day Spending Trends (Recharts-Style)
-        if (dashboardConfig.isVisible(com.example.data.WidgetId.SpendingTrendsChart)) {
-            Last30DaysSpendingTrendsChart(
-                transactions = transactionsState ?: emptyList(),
-                currency = currency
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-
-        // Spending vs Savings Visual allocation (Task 4)
-        if (dashboardConfig.isVisible(com.example.data.WidgetId.SpendingVsSavingsChart)) {
-            GeometricSpendingVsSavingsChart(
-                transactions = transactionsState ?: emptyList(),
-                currency = currency
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-
-        // Action Deck — Weekly Check-In
-        if (dashboardConfig.isVisible(com.example.data.WidgetId.WeeklyCheckIn)) {
-            Text(text = "DAILY ASSIGNMENTS", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onCheckInClick() },
-            colors = CardDefaults.cardColors(containerColor = LuxCardGray),
-            shape = RoundedCornerShape(16.dp),
-            border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.3f))
-        ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ThumbUp,
-                    contentDescription = null,
-                    tint = LuxGoldChange,
-                    modifier = Modifier.size(32.dp)
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1.0f)) {
-                    Text(text = "Complete Weekly Money Check-In", color = LuxIvory, fontWeight = FontWeight.Bold)
-                    Text(text = "Observe parameters, identify spend leaks, & restore OS limits.", fontSize = 12.sp, color = LuxMuted)
-                }
-                Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = LuxMuted)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-        } // /WeeklyCheckIn gate
-
-        if (dashboardConfig.isVisible(com.example.data.WidgetId.BankFeedSync)) {
-            BankFeedSyncWidget(
-                accounts = accounts,
-                currency = currency,
-                viewModel = viewModel,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-
-        // Recurring flagged bills widget (Task 3)
-        var editingBillDialogState by remember { mutableStateOf<BillSubscription?>(null) }
-
-        Text(text = "RECURRING OBLIGATIONS MONITOR", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
-        Spacer(modifier = Modifier.height(10.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-            border = BorderStroke(1.dp, LuxCardGray)
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                val recurringBills = bills.filter { it.isSubscription }
-                if (recurringBills.isEmpty()) {
-                    Text(text = "No recurring obligations currently registered.", color = LuxMuted, fontSize = 12.sp)
-                } else {
-                    recurringBills.forEach { b ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = b.name.uppercase(),
-                                    color = if (b.usageConfirmed) LuxIvory else LuxMuted,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
-                                    style = if (b.usageConfirmed) androidx.compose.ui.text.TextStyle.Default else androidx.compose.ui.text.TextStyle.Default.copy(textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough)
-                                )
-                                Text(text = "Due Day: ${b.dueDate} | ${currency}${String.format("%,.0f", b.amount)}", color = LuxMuted, fontSize = 11.sp)
-                            }
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                // Toggle status switch
-                                Switch(
-                                    checked = b.usageConfirmed,
-                                    onCheckedChange = { checkedState ->
-                                        viewModel.updateBill(b.copy(usageConfirmed = checkedState))
-                                    },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = LuxBlack,
-                                        checkedTrackColor = LuxGoldChange,
-                                        uncheckedThumbColor = LuxMuted,
-                                        uncheckedTrackColor = LuxDarkGray
-                                    ),
-                                    modifier = Modifier.scale(0.8f).testTag("bill_state_switch_${b.id}")
-                                )
-                                // Edit button
-                                IconButton(
-                                    onClick = { editingBillDialogState = b },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit obligation", tint = LuxGoldChange, modifier = Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (editingBillDialogState != null) {
-            QuickEditBillDialog(
-                bill = editingBillDialogState!!,
-                onSave = { updatedBill ->
-                    viewModel.updateBill(updatedBill)
-                    editingBillDialogState = null
-                },
-                onDismiss = { editingBillDialogState = null }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Accounts list
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text = "WEALTH VAULTS", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
-            IconButton(onClick = onAddAccountClick) {
-                Icon(imageVector = Icons.Default.AddCircleOutline, contentDescription = "Add account", tint = LuxGoldChange)
-            }
-        }
-        Spacer(modifier = Modifier.height(10.dp))
-
-        if (accounts.isEmpty()) {
-            Text(text = "No vaults defined. Link manual cash assets to track safe-to-spend limits.", color = LuxMuted, style = Typography.bodyLarge, modifier = Modifier.padding(vertical = 8.dp))
-        } else {
-            accounts.forEach { acc ->
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
-                    colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-                    border = BorderStroke(1.dp, LuxCardGray)
+                        .padding(bottom = 16.dp),
+                    shape = RoundedCornerShape(20.dp)
                 ) {
                     Row(
                         modifier = Modifier
@@ -2281,74 +2483,571 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            val accIcon = when (acc.type) {
-                                "Savings", "Salary" -> Icons.Default.Savings
-                                "Credit Card" -> Icons.Default.CreditCard
-                                "Cash" -> Icons.Default.Payments
-                                else -> Icons.Default.AccountBalance
+                            IconButton(
+                                onClick = onSettingsClick,
+                                modifier = Modifier.testTag("open_sidebar_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Menu,
+                                    contentDescription = "Open Sidebar Menu",
+                                    tint = LuxGoldChange,
+                                    modifier = Modifier.size(24.dp)
+                                )
                             }
-                            Icon(imageVector = accIcon, contentDescription = null, tint = LuxGoldChange)
-                            Spacer(modifier = Modifier.width(12.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
                             Column {
-                                Text(text = acc.name, color = LuxIvory, fontWeight = FontWeight.Bold)
-                                Text(text = acc.type, color = LuxMuted, fontSize = 12.sp)
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .background(LuxGreen, androidx.compose.foundation.shape.CircleShape)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = t("FIREBASE SECURE", "फ़ायरबेस सुरक्षित", "Firebase Surakshit"),
+                                        style = Typography.labelLarge,
+                                        color = LuxGreen,
+                                        fontSize = 10.sp,
+                                        letterSpacing = 1.sp
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = t("Auren Money Hub", "ऑरेन मनी हब", "Auren Hub"),
+                                    style = Typography.titleLarge,
+                                    color = LuxIvory,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(
-                                text = "$currency${String.format("%,.2f", acc.balance)}",
-                                color = if (acc.type == "Credit Card") LuxError else LuxGoldLight,
-                                fontWeight = FontWeight.Bold
-                            )
-                            if (acc.creditLimit > 0.0) {
-                                Text(text = "Limit: $currency${String.format("%,.0f", acc.creditLimit)}", color = LuxMuted, fontSize = 11.sp)
+                        
+                        // Header settings: Settings/Menu icon to open preferences sidebar
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = onSettingsClick,
+                                modifier = Modifier.testTag("home_settings_button")
+                            ) {
+                                Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings", tint = LuxGoldChange)
                             }
                         }
                     }
                 }
             }
-        }
+    
+            Spacer(modifier = Modifier.height(8.dp))
 
-        Spacer(modifier = Modifier.height(24.dp))
-
-        // Basic timeline indicator
-        Text(text = "COMMITMENT TIMELINE", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
-        Spacer(modifier = Modifier.height(10.dp))
-        val unpaidBills = bills.filter { b ->
-            val timestamp = b.lastPaidTimestamp
-            if (timestamp == 0L) true else {
-                val cal = Calendar.getInstance().apply { timeInMillis = timestamp }
-                val today = Calendar.getInstance()
-                cal.get(Calendar.MONTH) != today.get(Calendar.MONTH)
-            }
-        }
-        if (unpaidBills.isEmpty()) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = LuxDarkGray)
-            ) {
-                Box(modifier = Modifier.padding(16.dp), contentAlignment = Alignment.Center) {
-                    Text(text = "All commitments secured or no recurring items planned this cycle.", color = LuxGreen, textAlign = TextAlign.Center, fontSize = 13.sp)
+            // Safe To Spend display
+            CinematicEntranceContainer(delayMillis = 150) {
+                val spendCardBg = if (isDarkThemeGlobal) {
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            LuxGoldLight.copy(alpha = 0.25f),
+                            LuxDarkGray.copy(alpha = 0.40f)
+                        )
+                    )
+                } else {
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            LuxGoldLight.copy(alpha = 0.85f),
+                            Color.White.copy(alpha = 0.60f)
+                        )
+                    )
                 }
-            }
-        } else {
-            unpaidBills.forEach { bill ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                    border = BorderStroke(1.5.dp, if (isDarkThemeGlobal) LuxGoldChange.copy(alpha = 0.35f) else Color.White)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(imageVector = Icons.Default.CalendarToday, contentDescription = null, tint = LuxMuted, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Due on Day ${bill.dueDate}: ${bill.name}", color = LuxIvory, fontSize = 14.sp)
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(spendCardBg)
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        // Rotated geometric badge from design template replaced with animated breathing Auren Logo & cinematic halo pulse
+                        val infiniteGlow = rememberInfiniteTransition(label = "pulseGlow")
+                        val glowAlpha by infiniteGlow.animateFloat(
+                            initialValue = 0.15f,
+                            targetValue = 0.45f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(2500, easing = LinearEasing),
+                                repeatMode = RepeatMode.Reverse
+                            ),
+                            label = "glowAlpha"
+                        )
+                        val glowSize by infiniteGlow.animateFloat(
+                            initialValue = 54.dp.value,
+                            targetValue = 72.dp.value,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(2500, easing = LinearEasing),
+                                repeatMode = RepeatMode.Reverse
+                            ),
+                            label = "glowSize"
+                        )
+                        
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.size(80.dp)
+                        ) {
+                            // Pulsing Glow Ring (Halo)
+                            Box(
+                                modifier = Modifier
+                                    .size(glowSize.dp)
+                                    .background(
+                                        brush = Brush.radialGradient(
+                                            colors = listOf(
+                                                LuxGoldChange.copy(alpha = glowAlpha),
+                                                Color.Transparent
+                                            )
+                                        ),
+                                        shape = androidx.compose.foundation.shape.CircleShape
+                                    )
+                            )
+                            
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .background(color = LuxBlack, shape = RoundedCornerShape(16.dp))
+                                    .border(1.5.dp, LuxGoldChange.copy(alpha = 0.6f), RoundedCornerShape(16.dp))
+                                    .padding(4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                AurenLogo(modifier = Modifier.size(56.dp))
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Text(
+                            text = t("SAFE TO SPEND TODAY", "आज खर्च करने के लिए सुरक्षित मात्रा", "Safe to Spend Today"),
+                            style = Typography.labelLarge,
+                            color = if (isDarkThemeGlobal) LuxIvory else Color(0xFF21005D), // Dynamically supports eye contrast
+                            letterSpacing = 2.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "$currency${String.format("%,.2f", safeToSpendToday)}",
+                            style = Typography.displayLarge,
+                            color = if (isDarkThemeGlobal) LuxIvory else Color(0xFF21005D), // Dynamically supports eye contrast
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Divider(color = LuxCardGray)
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceAround
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(text = "AVAILABLE BUFFER", fontSize = 11.sp, color = LuxMuted)
+                                Text(text = "$currency${String.format("%,.0f", totalUsableBalance)}", fontWeight = FontWeight.Bold, color = LuxIvory)
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(text = "TENURE REMAINING", fontSize = 11.sp, color = LuxMuted)
+                                Text(text = "$daysRemaining days left", fontWeight = FontWeight.Bold, color = LuxIvory)
+                            }
+                        }
                     }
-                    Text(text = "$currency${bill.amount}", color = LuxError, fontWeight = FontWeight.Bold)
                 }
             }
-        }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Geometric Inspired Grid Layout (Task 4)
+            CinematicEntranceContainer(delayMillis = 250) {
+                Column {
+                    Text(text = "MONETARY MATRIX", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        // Column 1
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // Widget A: Income
+                            InteractiveGeometricCard(
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(color = LuxGoldChange, shape = RoundedCornerShape(10.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.ArrowUpward,
+                                            contentDescription = null,
+                                            tint = LuxBlack,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(text = "MONTHLY SALARY", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.SemiBold)
+                                    Text(text = "$currency${String.format("%,.0f", salaryVal)}", style = Typography.titleMedium, fontWeight = FontWeight.Bold, color = LuxIvory)
+                                }
+                            }
+
+                            // Widget B: Bills
+                            InteractiveGeometricCard(
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(color = LuxGoldChange, shape = RoundedCornerShape(10.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DateRange,
+                                            contentDescription = null,
+                                            tint = LuxBlack,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(text = "MONTHLY BILLS", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.SemiBold)
+                                    Text(text = "$currency${String.format("%,.0f", totalBillsVal)}", style = Typography.titleMedium, fontWeight = FontWeight.Bold, color = LuxIvory)
+                                }
+                            }
+                        }
+
+                        // Column 2
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // Widget A: Savings Goals
+                            InteractiveGeometricCard(
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(color = LuxGoldChange, shape = RoundedCornerShape(10.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.TrendingUp,
+                                            contentDescription = null,
+                                            tint = LuxBlack,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(text = "LOCKED SAVINGS", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.SemiBold)
+                                    Text(text = "$currency${String.format("%,.0f", totalGoalsVal)}", style = Typography.titleMedium, fontWeight = FontWeight.Bold, color = LuxIvory)
+                                }
+                            }
+
+                            // Widget B: Safety Buffer
+                            InteractiveGeometricCard(
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .background(color = LuxGoldChange, shape = RoundedCornerShape(10.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Shield,
+                                            contentDescription = null,
+                                            tint = LuxBlack,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(text = "SAFETY RESERVE", fontSize = 10.sp, color = LuxMuted, fontWeight = FontWeight.SemiBold)
+                                    Text(text = "$currency${String.format("%,.0f", bufferVal)}", style = Typography.titleMedium, fontWeight = FontWeight.Bold, color = LuxIvory)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Predictive End-of-Month Savings Widget
+            CinematicEntranceContainer(delayMillis = 350) {
+                PredictiveEomSavingsWidget(
+                    salary = salaryVal,
+                    transactions = transactionsState ?: emptyList(),
+                    bills = bills,
+                    currency = currency
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // 30-Day Spending Trends (Recharts-Style)
+            CinematicEntranceContainer(delayMillis = 450) {
+                Last30DaysSpendingTrendsChart(
+                    transactions = transactionsState ?: emptyList(),
+                    currency = currency
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Spending vs Savings Visual allocation (Task 4)
+            CinematicEntranceContainer(delayMillis = 550) {
+                GeometricSpendingVsSavingsChart(
+                    transactions = transactionsState ?: emptyList(),
+                    currency = currency
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Action Deck
+            CinematicEntranceContainer(delayMillis = 650) {
+                Column {
+                    Text(text = "DAILY ASSIGNMENTS", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    CinematicGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onCheckInClick,
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ThumbUp,
+                                contentDescription = null,
+                                tint = LuxGoldChange,
+                                modifier = Modifier.size(32.dp)
+                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1.0f)) {
+                                Text(text = "Complete Weekly Money Check-In", color = LuxIvory, fontWeight = FontWeight.Bold)
+                                Text(text = "Observe parameters, identify spend leaks, & restore OS limits.", fontSize = 12.sp, color = LuxMuted)
+                            }
+                            Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = LuxMuted)
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            CinematicEntranceContainer(delayMillis = 750) {
+                BankFeedSyncWidget(
+                    accounts = accounts,
+                    currency = currency,
+                    viewModel = viewModel,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Recurring flagged bills widget (Task 3)
+            var editingBillDialogState by remember { mutableStateOf<BillSubscription?>(null) }
+
+            CinematicEntranceContainer(delayMillis = 850) {
+                Column {
+                    Text(text = "RECURRING OBLIGATIONS MONITOR", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    CinematicGlassCard(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            val recurringBills = bills.filter { it.isSubscription }
+                            if (recurringBills.isEmpty()) {
+                                Text(text = "No recurring obligations currently registered.", color = LuxMuted, fontSize = 12.sp)
+                            } else {
+                                recurringBills.forEach { b ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = b.name.uppercase(),
+                                                color = if (b.usageConfirmed) LuxIvory else LuxMuted,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                style = if (b.usageConfirmed) TextStyle.Default else TextStyle.Default.copy(textDecoration = androidx.compose.ui.text.style.TextDecoration.LineThrough)
+                                            )
+                                            Text(text = "Due Day: ${b.dueDate} | ${currency}${String.format("%,.0f", b.amount)}", color = LuxMuted, fontSize = 11.sp)
+                                        }
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            // Toggle status switch
+                                            Switch(
+                                                checked = b.usageConfirmed,
+                                                onCheckedChange = { checkedState ->
+                                                    viewModel.updateBill(b.copy(usageConfirmed = checkedState))
+                                                },
+                                                colors = SwitchDefaults.colors(
+                                                    checkedThumbColor = LuxBlack,
+                                                    checkedTrackColor = LuxGoldChange,
+                                                    uncheckedThumbColor = LuxMuted,
+                                                    uncheckedTrackColor = LuxDarkGray
+                                                ),
+                                                modifier = Modifier.scale(0.8f).testTag("bill_state_switch_${b.id}")
+                                            )
+                                            // Edit button
+                                            IconButton(
+                                                onClick = { editingBillDialogState = b },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(imageVector = Icons.Default.Edit, contentDescription = "Edit obligation", tint = LuxGoldChange, modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (editingBillDialogState != null) {
+                QuickEditBillDialog(
+                    bill = editingBillDialogState!!,
+                    onSave = { updatedBill ->
+                        viewModel.updateBill(updatedBill)
+                        editingBillDialogState = null
+                    },
+                    onDismiss = { editingBillDialogState = null }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Accounts list
+            CinematicEntranceContainer(delayMillis = 950) {
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = "WEALTH VAULTS", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                        IconButton(onClick = onAddAccountClick) {
+                            Icon(imageVector = Icons.Default.AddCircleOutline, contentDescription = "Add account", tint = LuxGoldChange)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    if (accounts.isEmpty()) {
+                        Text(text = "No vaults defined. Link manual cash assets to track safe-to-spend limits.", color = LuxMuted, style = Typography.bodyLarge, modifier = Modifier.padding(vertical = 8.dp))
+                    } else {
+                        accounts.forEach { acc ->
+                            CinematicGlassCard(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                shape = RoundedCornerShape(16.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        val accIcon = when (acc.type) {
+                                            "Savings", "Salary" -> Icons.Default.Savings
+                                            "Credit Card" -> Icons.Default.CreditCard
+                                            "Cash" -> Icons.Default.Payments
+                                            else -> Icons.Default.AccountBalance
+                                        }
+                                        Icon(imageVector = accIcon, contentDescription = null, tint = LuxGoldChange)
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(text = acc.name, color = LuxIvory, fontWeight = FontWeight.Bold)
+                                            Text(text = acc.type, color = LuxMuted, fontSize = 12.sp)
+                                        }
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            text = "$currency${String.format("%,.2f", acc.balance)}",
+                                            color = if (acc.type == "Credit Card") LuxError else LuxGoldLight,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        if (acc.creditLimit > 0.0) {
+                                            Text(text = "Limit: $currency${String.format("%,.0f", acc.creditLimit)}", color = LuxMuted, fontSize = 11.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Basic timeline indicator
+            CinematicEntranceContainer(delayMillis = 1050) {
+                Column {
+                    Text(text = "COMMITMENT TIMELINE", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    val unpaidBills = bills.filter { b ->
+                        val timestamp = b.lastPaidTimestamp
+                        if (timestamp == 0L) true else {
+                            val cal = Calendar.getInstance().apply { timeInMillis = timestamp }
+                            val today = Calendar.getInstance()
+                            cal.get(Calendar.MONTH) != today.get(Calendar.MONTH)
+                        }
+                    }
+                    if (unpaidBills.isEmpty()) {
+                        CinematicGlassCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Box(modifier = Modifier.padding(16.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                Text(text = "All commitments secured or no recurring items planned this cycle.", color = LuxGreen, textAlign = TextAlign.Center, fontSize = 13.sp)
+                            }
+                        }
+                    } else {
+                        unpaidBills.forEach { bill ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(imageVector = Icons.Default.CalendarToday, contentDescription = null, tint = LuxMuted, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(text = "Due on Day ${bill.dueDate}: ${bill.name}", color = LuxIvory, fontSize = 14.sp)
+                                }
+                                Text(text = "$currency${bill.amount}", color = LuxError, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
     }
 
     // Old dimming overlay removed
@@ -4512,7 +5211,7 @@ fun GoalsSubView(
                             ) {
                                 Column {
                                     Text(text = g.name.uppercase(), color = LuxIvory, fontWeight = FontWeight.Bold)
-                                    Text(text = "Priority: ${g.priority} • Saved: ${MoneyFormat.compact(g.currentAmount, currency)} / ${MoneyFormat.compact(g.targetAmount, currency)}", color = LuxMuted, fontSize = 12.sp)
+                                    Text(text = "Priority: ${g.priority} • Saved: $currency${String.format("%,.0f2", g.currentAmount)} / $currency${String.format("%,.0f2", g.targetAmount)}", color = LuxMuted, fontSize = 12.sp)
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                     IconButton(onClick = { onDelete(g) }) {
@@ -5419,10 +6118,46 @@ fun InteractiveGeometricCard(
         label = "elevation"
     )
     
-    val outlineColor by animateColorAsState(
-        targetValue = if (isHovered) LuxGoldChange else LuxCardGray,
-        label = "outline"
-    )
+    val glassBg = if (isDarkThemeGlobal) {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0x2B21173C),
+                Color(0x1B0B0813)
+            )
+        )
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0xD8FFFFFF),
+                Color(0xA5F3ECFC)
+            )
+        )
+    }
+
+    val glassBorder = if (isHovered) {
+        BorderStroke(1.2.dp, LuxGoldChange.copy(alpha = 0.8f))
+    } else {
+        BorderStroke(
+            width = 1.dp,
+            brush = if (isDarkThemeGlobal) {
+                Brush.linearGradient(
+                    colors = listOf(
+                        LuxGoldChange.copy(alpha = 0.35f),
+                        Color.White.copy(alpha = 0.05f),
+                        LuxGoldChange.copy(alpha = 0.15f)
+                    )
+                )
+            } else {
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.8f),
+                        Color(0xFFCAC4D0).copy(alpha = 0.2f),
+                        LuxGoldChange.copy(alpha = 0.15f)
+                    )
+                )
+            }
+        )
+    }
 
     Card(
         modifier = modifier
@@ -5445,10 +6180,16 @@ fun InteractiveGeometricCard(
                 }
             ),
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-        border = BorderStroke(1.dp, outlineColor),
-        content = content
-    )
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        border = glassBorder
+    ) {
+        Column(
+            modifier = Modifier
+                .background(glassBg)
+                .fillMaxWidth(),
+            content = content
+        )
+    }
 }
 
 @Composable
@@ -5620,10 +6361,9 @@ fun PredictiveEomSavingsWidget(
         }
     }
 
-    Card(
+    CinematicGlassCard(
         modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-        border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.35f))
+        shape = RoundedCornerShape(24.dp)
     ) {
         Column(modifier = Modifier.padding(18.dp)) {
             Row(
@@ -5819,11 +6559,9 @@ fun GeometricSpendingVsSavingsChart(
     val spentPercentage = if (totalSpentAndSaved > 0) (totalExpenses / totalSpentAndSaved).toFloat() else 0.5f
     val savedPercentage = if (totalSpentAndSaved > 0) (totalSavings / totalSpentAndSaved).toFloat() else 0.5f
 
-    Card(
+    CinematicGlassCard(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = LuxCardGray),
-        border = BorderStroke(1.dp, Color(0xFFCAC4D0).copy(alpha = 0.4f))
+        shape = RoundedCornerShape(28.dp)
     ) {
         Column(
             modifier = Modifier
@@ -6052,11 +6790,9 @@ fun Last30DaysSpendingTrendsChart(
     val activeIndex = selectedPointIndex ?: 29
     val activePoint = dailyData.getOrNull(activeIndex)
 
-    Card(
+    CinematicGlassCard(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = LuxCardGray),
-        border = BorderStroke(1.dp, Color(0xFFCAC4D0).copy(alpha = 0.4f))
+        shape = RoundedCornerShape(28.dp)
     ) {
         Column(
             modifier = Modifier
@@ -6275,7 +7011,18 @@ fun Last30DaysSpendingTrendsChart(
                             )
                         )
 
-                        // Trend line
+                        // Ambient under-glow line layer
+                        drawPath(
+                            path = linePath,
+                            color = LuxGoldChange.copy(alpha = 0.35f),
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                width = 6.dp.toPx(),
+                                cap = StrokeCap.Round,
+                                join = androidx.compose.ui.graphics.StrokeJoin.Round
+                            )
+                        )
+
+                        // Trend line foreground core trace
                         drawPath(
                             path = linePath,
                             color = LuxGoldChange,
@@ -6730,10 +7477,8 @@ fun BankFeedSyncWidget(
     modifier: Modifier = Modifier
 ) {
     if (accounts.isEmpty()) {
-        Card(
-            modifier = modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-            border = BorderStroke(1.dp, LuxCardGray)
+        CinematicGlassCard(
+            modifier = modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(text = "AUREN LIVE LINK", style = Typography.labelLarge, color = LuxGoldChange)
@@ -6761,10 +7506,8 @@ fun BankFeedSyncWidget(
 
     val coroutineScope = rememberCoroutineScope()
 
-    Card(
-        modifier = modifier.fillMaxWidth().testTag("bank_feed_card"),
-        colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-        border = BorderStroke(1.dp, if (mockFeedItems.isNotEmpty() && showResults) LuxGoldChange.copy(alpha = 0.5f) else LuxCardGray)
+    CinematicGlassCard(
+        modifier = modifier.fillMaxWidth().testTag("bank_feed_card")
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -8285,10 +9028,16 @@ fun FirebaseAuthenticationScreen(onAuthSuccess: (String) -> Unit) {
         }
     }
 
+    val authBg = if (isDarkThemeGlobal) {
+        Brush.verticalGradient(colors = listOf(Color(0xFF130E20), Color(0xFF08060A)))
+    } else {
+        Brush.verticalGradient(colors = listOf(Color(0xFFFAF6FE), Color(0xFFEDE4F5)))
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(LuxBlack)
+            .background(authBg)
             .padding(24.dp)
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,

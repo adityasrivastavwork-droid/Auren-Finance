@@ -26,47 +26,25 @@ class FinanceRepository(private val dao: FinanceDao) {
 
     suspend fun insertTransaction(transaction: Transaction) {
         dao.insertTransaction(transaction)
-        applyBalanceDelta(transaction, sign = +1)
-    }
-
-    /**
-     * Bulk path used by [com.example.ui.FinanceViewModel.importBankTransactions].
-     * One DB write for all rows + a single sweep to recompute balances — vastly
-     * faster than calling [insertTransaction] N times for SMS / CSV imports.
-     */
-    suspend fun insertTransactions(transactions: List<Transaction>) {
-        if (transactions.isEmpty()) return
-        dao.insertTransactions(transactions)
-        // Recompute affected account balances in one pass
-        val accountsSnapshot = dao.getAccountsDirect().associateBy { it.id }.toMutableMap()
-        transactions.forEach { tx ->
-            val acc = accountsSnapshot[tx.accountId] ?: return@forEach
-            val delta = balanceDelta(tx, sign = +1)
-            accountsSnapshot[tx.accountId] = acc.copy(balance = acc.balance + delta)
-            if (tx.type == "Transfer" && tx.targetAccountId != null) {
-                val target = accountsSnapshot[tx.targetAccountId] ?: return@forEach
-                accountsSnapshot[tx.targetAccountId] = target.copy(balance = target.balance + tx.amount)
-            }
-        }
-        accountsSnapshot.values.forEach { dao.updateAccount(it) }
-    }
-
-    private fun balanceDelta(tx: Transaction, sign: Int): Double = when (tx.type) {
-        "Income", "Refund" -> tx.amount
-        "Expense", "Debt", "Savings" -> -tx.amount
-        "Transfer" -> -tx.amount
-        else -> 0.0
-    } * sign
-
-    private suspend fun applyBalanceDelta(transaction: Transaction, sign: Int) {
+        // Adjust balance automatically
         val accounts = dao.getAccountsDirect()
-        val acc = accounts.find { it.id == transaction.accountId } ?: return
-        val balanceDiff = balanceDelta(transaction, sign)
-        dao.updateAccount(acc.copy(balance = acc.balance + balanceDiff))
+        val acc = accounts.find { it.id == transaction.accountId }
+        if (acc != null) {
+            val balanceDiff = when (transaction.type) {
+                "Income", "Refund" -> transaction.amount
+                "Expense", "Debt", "Savings" -> -transaction.amount
+                "Transfer" -> -transaction.amount // outgoing
+                else -> 0.0
+            }
+            dao.updateAccount(acc.copy(balance = acc.balance + balanceDiff))
 
-        if (transaction.type == "Transfer" && transaction.targetAccountId != null) {
-            val targetAcc = accounts.find { it.id == transaction.targetAccountId } ?: return
-            dao.updateAccount(targetAcc.copy(balance = targetAcc.balance + transaction.amount * sign))
+            // If it's a transfer, also add of target account in the future if applicable
+            if (transaction.type == "Transfer" && transaction.targetAccountId != null) {
+                val targetAcc = accounts.find { it.id == transaction.targetAccountId }
+                if (targetAcc != null) {
+                    dao.updateAccount(targetAcc.copy(balance = targetAcc.balance + transaction.amount))
+                }
+            }
         }
     }
 

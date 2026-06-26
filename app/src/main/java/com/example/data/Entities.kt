@@ -18,19 +18,7 @@ data class UserProfile(
     val isOnboarded: Boolean = false,
     val autoSaveEnabled: Boolean = false,
     val autoSavePercentage: Double = 0.0,
-    val autoSaveGoalId: Long? = null,
-    /**
-     * Multi-step onboarding cursor. `0..N-1` while in-flight, `-1` after completion.
-     * Per AGENT.md §3 + Migration_2_3, existing onboarded users are set to -1 so the
-     * v3 upgrade does NOT throw them back into the wizard.
-     */
-    val onboardingStep: Int = -1,
-    /**
-     * CSV of dashboard widget ids the user has hidden. Empty string ⇒ all visible.
-     * Stored as one column (not N booleans) so adding a future widget requires no
-     * schema migration — see [com.example.data.WidgetId] for the canonical id list.
-     */
-    val hiddenWidgets: String = ""
+    val autoSaveGoalId: Long? = null
 )
 
 @Entity(tableName = "accounts")

@@ -22,24 +22,11 @@ android {
 
   signingConfigs {
     create("release") {
-      // Optional release signing — only wired if all three env vars are set.
-      // Otherwise the release build falls back to the debug keystore so an
-      // unattended ./gradlew assembleRelease doesn't silently produce an
-      // unsigned APK (or fail with a cryptic NPE).
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      val pwd = System.getenv("STORE_PASSWORD")
-      val keyPwd = System.getenv("KEY_PASSWORD")
-      if (file(keystorePath).exists() && !pwd.isNullOrBlank() && !keyPwd.isNullOrBlank()) {
-        storeFile = file(keystorePath)
-        storePassword = pwd
-        keyAlias = "upload"
-        keyPassword = keyPwd
-      } else {
-        logger.warn(
-          "Release signing config not provided (KEYSTORE_PATH / STORE_PASSWORD / KEY_PASSWORD). " +
-            "Release build will fall back to debug keystore."
-        )
-      }
+      storeFile = file(keystorePath)
+      storePassword = System.getenv("STORE_PASSWORD")
+      keyAlias = "upload"
+      keyPassword = System.getenv("KEY_PASSWORD")
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")
@@ -51,14 +38,10 @@ android {
 
   buildTypes {
     release {
-      isCrunchPngs = true
-      isMinifyEnabled = true
-      isShrinkResources = true
+      isCrunchPngs = false
+      isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = if (System.getenv("STORE_PASSWORD").isNullOrBlank())
-        signingConfigs.getByName("debugConfig")
-      else
-        signingConfigs.getByName("release")
+      signingConfig = signingConfigs.getByName("release")
     }
     debug {
       signingConfig = signingConfigs.getByName("debugConfig")
