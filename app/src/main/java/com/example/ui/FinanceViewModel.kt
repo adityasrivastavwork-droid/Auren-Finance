@@ -70,6 +70,17 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         list.filter { it.type != "Credit Card" && it.type != "Investment" }.sumOf { it.balance }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
+    /**
+     * Single source of truth for dashboard widget visibility.
+     *
+     * Derived from `profile.hiddenWidgets` (CSV). Null profile ⇒ all visible (preserves
+     * parity with the pre-onboarding-v3 dashboard so existing users see no change).
+     * Call sites do `if (dashboardConfig.value.isVisible(WidgetId.X)) { … }`.
+     */
+    val dashboardConfig: StateFlow<DashboardConfig> = profile.map { prof ->
+        DashboardConfig.fromCsv(prof?.hiddenWidgets)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DashboardConfig.AllVisible)
+
     val totalDebtOutstanding: StateFlow<Double> = combine(debts, accounts) { dList, aList ->
         val standardDebts = dList.sumOf { it.outstandingAmount }
         val ccBalances = aList.filter { it.type == "Credit Card" }.sumOf { it.balance }
@@ -127,29 +138,93 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         salary: Double,
         payday: Int,
         currentBalance: Double,
-        buffer: Double
+        buffer: Double,
+        hiddenWidgets: String = ""
     ) {
         viewModelScope.launch {
-            // Upsert User Profile
-            val defaultProf = UserProfile(
+            // ONE transactional write — see arch critique #2 (race vs follow-up update).
+            // The Review step commits everything in a single suspending block.
+            val existing = repository.getProfileDirect()
+            val merged = (existing ?: UserProfile()).copy(
                 currency = currency,
                 primaryObjective = objective,
                 appMode = mode,
                 salaryAmount = salary,
-                salaryDate = payday,
+                salaryDate = payday.coerceIn(1, 31),
                 safetyBuffer = buffer,
-                isOnboarded = true
+                isOnboarded = true,
+                onboardingStep = -1,  // completed sentinel
+                hiddenWidgets = hiddenWidgets
             )
-            repository.saveProfile(defaultProf)
+            repository.saveProfile(merged)
 
-            // Insert matching opening bank account
-            val defaultAcc = Account(
-                name = "Primary Bank Account",
-                type = "Savings",
-                balance = currentBalance,
-                institution = "Main Institution"
+            // Insert matching opening bank account (only on first onboarding, never on re-onboard).
+            if (existing == null || !existing.isOnboarded) {
+                val defaultAcc = Account(
+                    name = "Primary Bank Account",
+                    type = "Savings",
+                    balance = currentBalance,
+                    institution = "Main Institution"
+                )
+                repository.insertAccount(defaultAcc)
+            }
+        }
+    }
+
+    /**
+     * Persist the in-flight onboarding cursor after every "Continue" tap so process
+     * death / rotation lands the user back on the same step. We also persist any
+     * partial profile fields the user has entered so far (per arch critique #1) —
+     * a single `saveProfile` call, no race window.
+     */
+    fun persistOnboardingProgress(
+        step: Int,
+        currency: String? = null,
+        objective: String? = null,
+        mode: String? = null,
+        salary: Double? = null,
+        payday: Int? = null,
+        buffer: Double? = null,
+        hiddenWidgets: String? = null
+    ) {
+        viewModelScope.launch {
+            val current = repository.getProfileDirect() ?: UserProfile()
+            repository.saveProfile(
+                current.copy(
+                    onboardingStep = step,
+                    currency = currency ?: current.currency,
+                    primaryObjective = objective ?: current.primaryObjective,
+                    appMode = mode ?: current.appMode,
+                    salaryAmount = salary ?: current.salaryAmount,
+                    salaryDate = (payday ?: current.salaryDate).coerceIn(1, 31),
+                    safetyBuffer = buffer ?: current.safetyBuffer,
+                    hiddenWidgets = hiddenWidgets ?: current.hiddenWidgets
+                )
             )
-            repository.insertAccount(defaultAcc)
+        }
+    }
+
+    /** Settings → "Reset setup" — re-enter the onboarding wizard from step 0. */
+    fun resetOnboarding() {
+        viewModelScope.launch {
+            val current = repository.getProfileDirect() ?: UserProfile()
+            repository.saveProfile(current.copy(isOnboarded = false, onboardingStep = 0))
+        }
+    }
+
+    /** Toggle a single dashboard widget on/off. Used by Settings → Dashboard widgets. */
+    fun setWidgetVisibility(widget: WidgetId, visible: Boolean) {
+        viewModelScope.launch {
+            val current = repository.getProfileDirect() ?: UserProfile()
+            val cfg = DashboardConfig.fromCsv(current.hiddenWidgets)
+            val updated = if (visible) {
+                // unhide
+                DashboardConfig.fromCsv(cfg.toCsv())
+                    .let { c -> if (c.isVisible(widget)) c else c.toggle(widget) }
+            } else {
+                if (!cfg.isVisible(widget)) cfg else cfg.toggle(widget)
+            }
+            repository.saveProfile(current.copy(hiddenWidgets = updated.toCsv()))
         }
     }
 
@@ -188,8 +263,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             )
             repository.insertTransaction(trans)
 
-            // Auto-Save feature: whenever income of category "salary" or containing "salary" is logged
-            if (type == "Income" && (category.lowercase() == "salary" || merchant.lowercase().contains("salary") || category.lowercase() == "income")) {
+            // Auto-Save feature: any income whose category or merchant name signals "salary/income",
+            // including i18n strings (Hindi/Hinglish: "वेतन", "Vetan", "tankha", etc.).
+            if (type == "Income" && TransactionHeuristics.isSalaryLike(category, merchant)) {
                 val prof = repository.getProfileDirect()
                 if (prof != null && prof.autoSaveEnabled && prof.autoSavePercentage > 0.1 && prof.autoSaveGoalId != null) {
                     val dbGoals = repository.getGoalsDirect()
@@ -217,10 +293,10 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 }
             }
 
-            // If it's a debt/EMI payment, check if we should reduce outstanding debts
-            if (type == "Debt" || category == "EMI") {
+            // If it's a debt/EMI payment, try to find the matching debt by fuzzy name.
+            if (type == "Debt" || TransactionHeuristics.isEmiLike(category, merchant)) {
                 val dbDebts = repository.getDebtsDirect()
-                val targetDebt = dbDebts.find { it.name.lowercase() == merchant.lowercase() || it.lender.lowercase() == merchant.lowercase() }
+                val targetDebt = TransactionHeuristics.matchDebt(dbDebts, merchant)
                 if (targetDebt != null) {
                     val remaining = (targetDebt.outstandingAmount - amount).coerceAtLeast(0.0)
                     if (remaining == 0.0) {
@@ -454,8 +530,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         val diningValue = categoryGroups["Dining"] ?: 0.0
         
         val list = mutableListOf<String>()
-        list.add("• **Optimize Dining spend**: Flexible outlays on Dining out (${currency}${String.format("%,.0f2", diningValue)}) represent an immediate friction point. Trim dining spend by 15% to reinforce the safety buffer.")
-        list.add("• **Rationalize Discretionary Shopping**: Total shopping outlays reached ${currency}${String.format("%,.0f2", shoppingValue)}. Setting a weekly limit of ${currency}${String.format("%,.0f2", shoppingValue * 0.5)} would secure immediate safety cushions.")
+        list.add("• **Optimize Dining spend**: Flexible outlays on Dining out (${MoneyFormat.compact(diningValue, currency)}) represent an immediate friction point. Trim dining spend by 15% to reinforce the safety buffer.")
+        list.add("• **Rationalize Discretionary Shopping**: Total shopping outlays reached ${MoneyFormat.compact(shoppingValue, currency)}. Setting a weekly limit of ${MoneyFormat.compact(shoppingValue * 0.5, currency)} would secure immediate safety cushions.")
         list.add("• **Establish Direct Separation**: Automate your savings rate first. Diverting an automatic percentage of incoming income directly to your targeted savings goals removes decision friction.")
         return list.joinToString("\n")
     }
@@ -557,12 +633,11 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    // Bulk Import for automated bank feeds
+    // Bulk Import for automated bank feeds — uses repository bulk path (one DAO call).
     fun importBankTransactions(list: List<Transaction>) {
+        if (list.isEmpty()) return
         viewModelScope.launch {
-            list.forEach { tx ->
-                repository.insertTransaction(tx)
-            }
+            repository.insertTransactions(list)
         }
     }
 
