@@ -2568,13 +2568,6 @@ fun HomeScreen(
             }
 
             // Action Deck
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-            }
-
-            // Action Deck
             CinematicEntranceContainer(delayMillis = 650) {
                 Column {
                     Text(text = "DAILY ASSIGNMENTS", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
