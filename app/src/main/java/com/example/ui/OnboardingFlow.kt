@@ -33,6 +33,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,18 +88,18 @@ fun OnboardingFlow(
     // Resume from the persisted cursor (0..STEP_COUNT-1). -1 means completed so we'd
     // never have entered the flow; coerce defensively to 0.
     val initialStep = (profile?.onboardingStep ?: 0).coerceIn(0, STEP_COUNT - 1)
-    var step by rememberSaveable { mutableStateOf(initialStep) }
+    var step: Int by rememberSaveable { mutableStateOf(initialStep) }
 
     // Local edit state — seeded from existing profile so resume preserves entries.
-    var currency by rememberSaveable { mutableStateOf(profile?.currency ?: "₹") }
-    var objective by rememberSaveable { mutableStateOf(profile?.primaryObjective ?: "Control spending") }
-    var mode by rememberSaveable { mutableStateOf(profile?.appMode ?: "Strict Mode") }
-    var salaryText by rememberSaveable { mutableStateOf(profile?.salaryAmount?.toInt()?.toString() ?: "60000") }
-    var paydayText by rememberSaveable { mutableStateOf(profile?.salaryDate?.toString() ?: "1") }
-    var balanceText by rememberSaveable { mutableStateOf("25000") }
-    var bufferText by rememberSaveable { mutableStateOf(profile?.safetyBuffer?.toInt()?.toString() ?: "2000") }
-    var dashboardConfig by rememberSaveable(
-        stateSaver = androidx.compose.runtime.saveable.Saver(
+    var currency: String by rememberSaveable { mutableStateOf(profile?.currency ?: "₹") }
+    var objective: String by rememberSaveable { mutableStateOf(profile?.primaryObjective ?: "Control spending") }
+    var mode: String by rememberSaveable { mutableStateOf(profile?.appMode ?: "Strict Mode") }
+    var salaryText: String by rememberSaveable { mutableStateOf(profile?.salaryAmount?.toInt()?.toString() ?: "60000") }
+    var paydayText: String by rememberSaveable { mutableStateOf(profile?.salaryDate?.toString() ?: "1") }
+    var balanceText: String by rememberSaveable { mutableStateOf("25000") }
+    var bufferText: String by rememberSaveable { mutableStateOf(profile?.safetyBuffer?.toInt()?.toString() ?: "2000") }
+    var dashboardConfig: DashboardConfig by rememberSaveable(
+        stateSaver = androidx.compose.runtime.saveable.Saver<DashboardConfig, String>(
             save = { it.toCsv() },
             restore = { DashboardConfig.fromCsv(it) }
         )

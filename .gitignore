@@ -16,13 +16,3 @@
 local.properties
 .env
 debug.keystore
-
-# AI assistant local rules (not shared via git)
-AGENT.md
-CLAUDE.md
-.remember/
-.claude/
-
-# Local-only web UI preview (do not push)
-preview/
-
