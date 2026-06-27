@@ -332,9 +332,7 @@ fun OnboardingFlow(
                     )
                     STEP_DASHBOARD -> DashboardStep(
                         config = dashboardConfig,
-                        orderedWidgets = orderedWidgets,
-                        onToggle = { widget -> dashboardConfig = dashboardConfig.toggle(widget) },
-                        onReorder = { newOrder -> widgetOrderCsv = newOrder.joinToString(",") { it.key } }
+                        onToggle = { widget -> dashboardConfig = dashboardConfig.toggle(widget) }
                     )
                     STEP_REVIEW -> ReviewStep(
                         currency = currency,
@@ -1263,111 +1261,52 @@ private fun RecurringEntryCard(
 @Composable
 private fun DashboardStep(
     config: DashboardConfig,
-    orderedWidgets: List<WidgetId>,
-    onToggle: (WidgetId) -> Unit,
-    onReorder: (List<WidgetId>) -> Unit
+    onToggle: (WidgetId) -> Unit
 ) {
     StepHeader(
         title = "Tune your dashboard",
-        subtitle = "Drag the ≡ handle to reorder · tap switch to toggle"
+        subtitle = "Choose which widgets to show on your home screen. Monetary Matrix is always on."
     )
 
-    // Drag state
-    var draggedIndex by remember { mutableStateOf<Int?>(null) }
-    var dragOffsetY by remember { mutableStateOf(0f) }
-    val cardHeightPx = remember { 72f * 3f } // approx 72dp * density, using 216f as rough estimate
+    // MonetaryMatrix is always visible and pinned — show it as locked
+    Spacer(Modifier.height(8.dp))
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = LuxGoldChange.copy(alpha = 0.1f)),
+        border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.5f)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Lock, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(WidgetId.MonetaryMatrix.label, color = LuxIvory, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(WidgetId.MonetaryMatrix.description, color = LuxMuted, fontSize = 11.sp)
+            }
+            Text("Always on", color = LuxGoldChange, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+    }
 
-    orderedWidgets.forEachIndexed { index, w ->
+    // Remaining toggleable widgets (excluding MonetaryMatrix)
+    WidgetId.values().filter { it != WidgetId.MonetaryMatrix }.forEach { w ->
         val visible = config.isVisible(w)
-        val isDragged = draggedIndex == index
-
         Spacer(Modifier.height(8.dp))
         Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .zIndex(if (isDragged) 1f else 0f)
-                .offset(y = if (isDragged) dragOffsetY.dp else 0.dp),
+            modifier = Modifier.fillMaxWidth().clickable { onToggle(w) },
             colors = CardDefaults.cardColors(containerColor = LuxCardGray.copy(alpha = 0.4f)),
-            border = BorderStroke(
-                1.dp,
-                when {
-                    isDragged -> LuxGoldChange
-                    visible -> LuxGoldChange.copy(alpha = 0.5f)
-                    else -> LuxCardGray
-                }
-            ),
+            border = BorderStroke(1.dp, if (visible) LuxGoldChange.copy(alpha = 0.5f) else LuxCardGray),
             shape = RoundedCornerShape(12.dp)
         ) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Drag handle — drag gesture only starts from here
-                Icon(
-                    Icons.Default.DragHandle,
-                    contentDescription = "Drag to reorder",
-                    tint = LuxGoldChange.copy(alpha = 0.8f),
-                    modifier = Modifier
-                        .size(28.dp)
-                        .pointerInput(index) {
-                            detectDragGestures(
-                                onDragStart = {
-                                    draggedIndex = index
-                                    dragOffsetY = 0f
-                                },
-                                onDragEnd = {
-                                    draggedIndex = null
-                                    dragOffsetY = 0f
-                                },
-                                onDragCancel = {
-                                    draggedIndex = null
-                                    dragOffsetY = 0f
-                                },
-                                onDrag = { change, dragAmount ->
-                                    change.consume()
-                                    dragOffsetY += dragAmount.y / 3f
-                                    val halfCard = cardHeightPx / 2f
-                                    val currentIdx = draggedIndex ?: return@detectDragGestures
-                                    when {
-                                        dragOffsetY > halfCard && currentIdx < orderedWidgets.size - 1 -> {
-                                            val newList = orderedWidgets.toMutableList()
-                                            val tmp = newList[currentIdx]
-                                            newList[currentIdx] = newList[currentIdx + 1]
-                                            newList[currentIdx + 1] = tmp
-                                            onReorder(newList)
-                                            draggedIndex = currentIdx + 1
-                                            dragOffsetY = 0f
-                                        }
-                                        dragOffsetY < -halfCard && currentIdx > 0 -> {
-                                            val newList = orderedWidgets.toMutableList()
-                                            val tmp = newList[currentIdx]
-                                            newList[currentIdx] = newList[currentIdx - 1]
-                                            newList[currentIdx - 1] = tmp
-                                            onReorder(newList)
-                                            draggedIndex = currentIdx - 1
-                                            dragOffsetY = 0f
-                                        }
-                                    }
-                                }
-                            )
-                        }
-                )
-                Spacer(Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = w.label,
-                        color = LuxIvory,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = w.description,
-                        color = LuxMuted,
-                        fontSize = 11.sp,
-                        lineHeight = 14.sp
-                    )
+                    Text(w.label, color = LuxIvory, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(w.description, color = LuxMuted, fontSize = 11.sp, lineHeight = 14.sp)
                 }
                 Switch(
                     checked = visible,
@@ -1389,9 +1328,7 @@ private fun DashboardStep(
             text = "At least one widget must stay on.",
             color = LuxGoldChange,
             fontSize = 12.sp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp)
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
         )
     }
 }

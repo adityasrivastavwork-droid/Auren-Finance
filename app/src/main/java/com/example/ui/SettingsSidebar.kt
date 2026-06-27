@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -800,9 +801,37 @@ private fun ThemeEditor() {
 @Composable
 private fun WidgetsEditor(viewModel: FinanceViewModel) {
     val cfg by viewModel.dashboardConfig.collectAsState()
-    InfoTip(text = "Toggle widgets on or off. At least one widget must remain visible.")
+    InfoTip(text = "Toggle widgets on or off. Monetary Matrix is always visible.")
     Spacer(Modifier.height(4.dp))
-    com.example.data.WidgetId.values().forEach { w ->
+
+    // MonetaryMatrix locked row
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = LuxGoldChange.copy(alpha = 0.1f)),
+        border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.5f)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Lock,
+                contentDescription = null,
+                tint = LuxGoldChange,
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(com.example.data.WidgetId.MonetaryMatrix.label, color = LuxIvory, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(com.example.data.WidgetId.MonetaryMatrix.description, color = LuxMuted, fontSize = 11.sp)
+            }
+            Text("Always on", color = LuxGoldChange, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+    Spacer(Modifier.height(6.dp))
+
+    com.example.data.WidgetId.values().filter { it != com.example.data.WidgetId.MonetaryMatrix }.forEach { w ->
         val visible = cfg.isVisible(w)
         Card(
             modifier = Modifier
@@ -846,7 +875,9 @@ private fun WidgetsEditor(viewModel: FinanceViewModel) {
 }
 
 private fun WidgetId_visibleCount(cfg: com.example.data.DashboardConfig): Int =
-    com.example.data.WidgetId.values().count { cfg.isVisible(it) }
+    com.example.data.WidgetId.values()
+        .filter { it != com.example.data.WidgetId.MonetaryMatrix }
+        .count { cfg.isVisible(it) }
 
 @Composable
 private fun ShakeToAddEditor(viewModel: FinanceViewModel, profile: com.example.data.UserProfile?) {

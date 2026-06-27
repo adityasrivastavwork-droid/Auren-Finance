@@ -49,6 +49,7 @@ import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import androidx.activity.compose.BackHandler
 import com.example.data.*
 import com.example.ui.theme.*
 import java.text.SimpleDateFormat
@@ -138,6 +139,10 @@ fun AurenApp(viewModel: FinanceViewModel) {
     var navBarHideJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     fun revealNavBar() {
+        if (activeTab == "coach") {
+            navBarVisible = false
+            return
+        }
         navBarVisible = true
         navBarHideJob?.cancel()
         if (activeTab != "home") {
@@ -148,11 +153,14 @@ fun AurenApp(viewModel: FinanceViewModel) {
         }
     }
 
-    // When tab changes to home always show; to other tabs start hide timer
+    // When tab changes to home always show; coach always hide; other tabs start hide timer
     LaunchedEffect(activeTab) {
         if (activeTab == "home") {
             navBarHideJob?.cancel()
             navBarVisible = true
+        } else if (activeTab == "coach") {
+            navBarHideJob?.cancel()
+            navBarVisible = false
         } else {
             revealNavBar()
         }
@@ -248,6 +256,22 @@ fun AurenApp(viewModel: FinanceViewModel) {
     } else {
         var itemPendingForDeletion by remember { mutableStateOf<Any?>(null) }
 
+        // Back navigation: 1x → go home; from home 2x quickly → close app
+        val activity = context as? android.app.Activity
+        var backPressedTime by remember { mutableStateOf(0L) }
+        BackHandler(enabled = true) {
+            if (activeTab != "home") {
+                activeTab = "home"
+            } else {
+                val now = System.currentTimeMillis()
+                if (now - backPressedTime < 2000) {
+                    activity?.finish()
+                } else {
+                    backPressedTime = now
+                }
+            }
+        }
+
         val cinematicBackground = if (isDarkThemeGlobal) {
             Brush.verticalGradient(colors = listOf(Color(0xFF130E20), Color(0xFF08060A)))
          } else {
@@ -256,7 +280,7 @@ fun AurenApp(viewModel: FinanceViewModel) {
 
         Scaffold(
             floatingActionButton = {
-                if (!showSideBar && (activeTab == "home" || activeTab == "transactions")) {
+                if (!showSideBar && activeTab == "home") {
                     FloatingActionButton(
                         onClick = { showAddTransactionDialog = true },
                         containerColor = LuxGoldChange,
@@ -334,7 +358,8 @@ fun AurenApp(viewModel: FinanceViewModel) {
                                 transactions = transactions,
                                 accounts = accounts,
                                 currency = currency,
-                                onDeleteTransaction = { itemPendingForDeletion = it }
+                                onDeleteTransaction = { itemPendingForDeletion = it },
+                                onSettingsClick = { showSideBar = true }
                             )
                             "plan" -> PlanScreen(
                                 viewModel = viewModel,
@@ -2250,16 +2275,8 @@ fun HomeScreen(
                                 )
                             }
                         }
-                        
-                        // Header settings: Settings/Menu icon to open preferences sidebar
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = onSettingsClick,
-                                modifier = Modifier.testTag("home_settings_button")
-                            ) {
-                                Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings", tint = LuxGoldChange)
-                            }
-                        }
+
+                        // Header: only menu icon (settings icon removed)
                     }
                 }
             }
@@ -2776,12 +2793,11 @@ fun HomeScreen(
                                 }
                                 Text(text = "$currency${bill.amount}", color = LuxError, fontWeight = FontWeight.Bold)
                             }
-                        }
                     }
                 }
             }
-    }
-        Spacer(modifier = Modifier.height(100.dp))
+            Spacer(modifier = Modifier.height(120.dp))
+        }
     }
 
     // Old dimming overlay removed
@@ -3222,7 +3238,8 @@ fun TransactionsScreen(
     transactions: List<Transaction>,
     accounts: List<Account>,
     currency: String,
-    onDeleteTransaction: (Transaction) -> Unit
+    onDeleteTransaction: (Transaction) -> Unit,
+    onSettingsClick: () -> Unit = {}
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedFilter by remember { mutableStateOf("All") } // "All", "Income", "Expense", "Savings"
@@ -3247,10 +3264,28 @@ fun TransactionsScreen(
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Text(text = "TRANSACTION LEDGER", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
-        Text(text = "Frictionless Record-Keeping", style = Typography.headlineMedium, color = LuxIvory)
-
-        Spacer(modifier = Modifier.height(16.dp))
+        // Unified header card
+        CinematicGlassCard(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onSettingsClick, modifier = Modifier.testTag("transactions_menu_button")) {
+                        Icon(Icons.Default.Menu, contentDescription = "Open Sidebar", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Column {
+                        Text("TRANSACTION LEDGER", style = Typography.labelLarge, color = LuxGoldChange, fontSize = 10.sp, letterSpacing = 1.sp)
+                        Text("Record-Keeping", style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
 
         // Search Field
         OutlinedTextField(
@@ -3412,21 +3447,23 @@ fun PlanScreen(
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        CinematicGlassCard(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            shape = RoundedCornerShape(20.dp)
         ) {
-            Column {
-                Text(text = "WEALTH STRATEGIZER", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
-                Text(text = "Long-term Planning Hub", style = Typography.headlineMedium, color = LuxIvory)
-            }
-            IconButton(onClick = onSettingsClick) {
-                Icon(imageVector = Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+            Row(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onSettingsClick) {
+                        Icon(Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Column {
+                        Text("WEALTH STRATEGIZER", style = Typography.labelLarge, color = LuxGoldChange, fontSize = 10.sp, letterSpacing = 1.sp)
+                        Text("Planning Hub", style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
 
         // Horizontal Category Tabs
         Row(
@@ -5132,46 +5169,39 @@ fun InsightsScreen(
             .padding(16.dp)
             .verticalScroll(rememberScrollState())
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        CinematicGlassCard(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            shape = RoundedCornerShape(20.dp)
         ) {
-            Column {
-                Text(text = "CLARITY RADAR", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
-                Text(text = "Financial Health Audit", style = Typography.headlineMedium, color = LuxIvory)
+            Row(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onSettingsClick) {
+                        Icon(Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Column {
+                        Text("CLARITY RADAR", style = Typography.labelLarge, color = LuxGoldChange, fontSize = 10.sp, letterSpacing = 1.sp)
+                        Text("Financial Health", style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
+                    }
+                }
+                IconButton(
+                    onClick = {
+                        exportFinancialSummaryToPrint(
+                            context = context,
+                            profile = profile,
+                            accounts = accountsState ?: emptyList(),
+                            transactions = transactions,
+                            bills = billsState ?: emptyList(),
+                            goals = goalsState ?: emptyList(),
+                            currency = currency
+                        )
+                    },
+                    modifier = Modifier.clip(androidx.compose.foundation.shape.CircleShape).background(LuxDarkGray).border(1.dp, LuxGoldChange, androidx.compose.foundation.shape.CircleShape)
+                ) {
+                    Icon(Icons.Default.Print, contentDescription = "Print", tint = LuxGoldChange)
+                }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onSettingsClick) {
-                Icon(imageVector = Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
-            }
-            IconButton(
-                onClick = {
-                    exportFinancialSummaryToPrint(
-                        context = context,
-                        profile = profile,
-                        accounts = accountsState ?: emptyList(),
-                        transactions = transactions,
-                        bills = billsState ?: emptyList(),
-                        goals = goalsState ?: emptyList(),
-                        currency = currency
-                    )
-                },
-                modifier = Modifier
-                    .clip(androidx.compose.foundation.shape.CircleShape)
-                    .background(LuxDarkGray)
-                    .border(1.dp, LuxGoldChange, androidx.compose.foundation.shape.CircleShape)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Print,
-                    contentDescription = "Print Summary Report",
-                    tint = LuxGoldChange
-                )
-            }
-            } // end Row (menu + export)
         }
-
-        Spacer(modifier = Modifier.height(20.dp))
 
         // Spending Heatmap
         SpendingHeatmap(transactions = transactions, currency = currency)
@@ -5401,7 +5431,7 @@ fun InsightsScreen(
                 )
             }
         }
-        Spacer(modifier = Modifier.height(100.dp))
+        Spacer(modifier = Modifier.height(120.dp))
     }
 }
 
@@ -5518,21 +5548,23 @@ fun CoachScreen(viewModel: FinanceViewModel, currency: String, onSettingsClick: 
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+        CinematicGlassCard(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            shape = RoundedCornerShape(20.dp)
         ) {
-            Column {
-                Text(text = t("AUREN PRIVATE CHAT", "ऑरेन प्राइवेट चैट", "Auren Chat Console"), style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
-                Text(text = t("AI Money Coach / Dost", "ऑरेन एआई सलाहकार", "Auren AI Money Dost"), style = Typography.headlineMedium, color = LuxIvory)
-            }
-            IconButton(onClick = onSettingsClick) {
-                Icon(imageVector = Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+            Row(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onSettingsClick) {
+                        Icon(Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Column {
+                        Text(t("AUREN PRIVATE CHAT", "ऑरेन प्राइवेट चैट", "Auren Chat Console"), style = Typography.labelLarge, color = LuxGoldChange, fontSize = 10.sp, letterSpacing = 1.sp)
+                        Text(t("AI Money Coach", "ऑरेन एआई सलाहकार", "AI Dost"), style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
 
         // Chat conversation ledger
         LazyColumn(
@@ -5836,26 +5868,45 @@ fun AddTransactionDialog(
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
-            shape = RoundedCornerShape(16.dp),
+            shape = RoundedCornerShape(28.dp),
             colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-            border = BorderStroke(1.dp, LuxGoldChange)
+            border = BorderStroke(1.5.dp, LuxGoldChange.copy(alpha = 0.6f))
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp)
+                    .padding(24.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Text(text = "VALUATIVE LEDGER INPUT", style = Typography.labelLarge, color = LuxGoldChange)
-                Text(text = "Add Transaction Record", style = Typography.titleLarge, color = LuxIvory, modifier = Modifier.padding(bottom = 16.dp))
+                // Header row with dismiss X
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        Text("ADD TRANSACTION", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                        Text("Record a new entry", style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
+                    }
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = LuxMuted, modifier = Modifier.size(20.dp))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 OutlinedTextField(
                     value = amount,
                     onValueChange = { amount = it },
-                    label = { Text("Transaction Value") },
+                    label = { Text("Amount", color = LuxMuted) },
+                    leadingIcon = { Text(currency, color = LuxGoldChange, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.padding(start = 8.dp)) },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange),
-                    modifier = Modifier.fillMaxWidth()
+                    textStyle = TextStyle(color = LuxIvory, fontSize = 20.sp, fontWeight = FontWeight.Bold),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LuxGoldChange,
+                        unfocusedBorderColor = LuxCardGray,
+                        focusedTextColor = LuxIvory,
+                        unfocusedTextColor = LuxIvory,
+                        cursorColor = LuxGoldChange
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -6090,30 +6141,28 @@ fun AddTransactionDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    OutlinedButton(onClick = onDismiss, border = BorderStroke(1.dp, LuxMuted)) {
-                        Text("Dimiss", color = LuxIvory)
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        border = BorderStroke(1.dp, LuxMuted),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Cancel", color = LuxIvory)
                     }
 
                     Button(
                         onClick = {
                             val amtVal = amount.toDoubleOrNull() ?: 0.0
                             if (amtVal > 0.0 && selectedAccountId != 0L) {
-                                onAdd(
-                                    amtVal,
-                                    selectedType,
-                                    selectedAccountId,
-                                    category,
-                                    merchant.ifBlank { "Direct Purchase" },
-                                    note,
-                                    targetAccountId,
-                                    selectedDateMillis,
-                                    isRecurringField
-                                )
+                                onAdd(amtVal, selectedType, selectedAccountId, category, merchant.ifBlank { "Direct Purchase" }, note, targetAccountId, selectedDateMillis, isRecurringField)
                             }
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack)
+                        colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text("Add")
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Add Entry", fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -6761,193 +6810,130 @@ fun Last30DaysSpendingTrendsChart(
     currency: String,
     modifier: Modifier = Modifier
 ) {
-    // Group transactions & calculate daily data
-    val dailyData = remember(transactions) {
-        val calendar = Calendar.getInstance()
-        val monthLabels = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    data class DailySeries(val label: String, val expense: Double, val income: Double, val savings: Double)
+
+    val dailySeries = remember(transactions) {
+        val monthLabels = listOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
         List(30) { index ->
             val offset = 29 - index
-            val targetCal = Calendar.getInstance().apply {
-                add(Calendar.DAY_OF_YEAR, -offset)
+            val targetCal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -offset) }
+            val dayOfYear = targetCal.get(Calendar.DAY_OF_YEAR)
+            val year = targetCal.get(Calendar.YEAR)
+            val dayTx = transactions.filter {
+                val c = Calendar.getInstance().apply { timeInMillis = it.date }
+                c.get(Calendar.DAY_OF_YEAR) == dayOfYear && c.get(Calendar.YEAR) == year
             }
-            val targetDayOfYear = targetCal.get(Calendar.DAY_OF_YEAR)
-            val targetYear = targetCal.get(Calendar.YEAR)
-            
-            val totalSpent = transactions.filter {
-                val txCal = Calendar.getInstance().apply { timeInMillis = it.date }
-                txCal.get(Calendar.DAY_OF_YEAR) == targetDayOfYear &&
-                txCal.get(Calendar.YEAR) == targetYear &&
-                it.type.equals("Expense", ignoreCase = true)
-            }.sumOf { it.amount }
-            
-            val dayOfMonth = targetCal.get(Calendar.DAY_OF_MONTH)
-            val monthStr = monthLabels.getOrElse(targetCal.get(Calendar.MONTH)) { "" }
-            val label = "$dayOfMonth $monthStr"
-            
-            DailySpendingPoint(
+            val label = "${targetCal.get(Calendar.DAY_OF_MONTH)} ${monthLabels.getOrElse(targetCal.get(Calendar.MONTH)) { "" }}"
+            DailySeries(
                 label = label,
-                amount = totalSpent,
-                dateString = label
+                expense = dayTx.filter { it.type.equals("Expense", true) }.sumOf { it.amount },
+                income = dayTx.filter { it.type.equals("Income", true) }.sumOf { it.amount },
+                savings = dayTx.filter { it.type.equals("Savings", true) }.sumOf { it.amount }
             )
         }
     }
 
     var selectedPointIndex by remember { mutableStateOf<Int?>(null) }
-    
     val activeIndex = selectedPointIndex ?: 29
-    val activePoint = dailyData.getOrNull(activeIndex)
+    val active = dailySeries.getOrNull(activeIndex)
 
     CinematicGlassCard(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(28.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(24.dp)) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
-                    Text(
-                        text = t("30-DAY SPENDING TRENDS", "30-दिवसीय खर्च चार्ट", "30-Day Spending trends"),
-                        style = Typography.labelLarge,
-                        color = LuxGoldChange,
-                        letterSpacing = 2.sp
-                    )
-                    Text(
-                        text = t("Interactive Recharts Spending Model", "इंटरैक्टिव व्यय विश्लेषण मॉडल", "Interactive Recharts spending model"),
-                        style = Typography.bodyMedium,
-                        color = LuxMuted
-                    )
+                    Text(t("30-DAY SPENDING TRENDS", "30-दिवसीय खर्च चार्ट", "30-Day Spending trends"), style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                    Text(t("Expenses · Income · Savings", "खर्च · आय · बचत", "Expenses · Income · Savings"), style = Typography.bodyMedium, color = LuxMuted)
                 }
-                
-                Icon(
-                    imageVector = Icons.Default.TrendingUp,
-                    contentDescription = null,
-                    tint = LuxGoldChange,
-                    modifier = Modifier.size(24.dp)
-                )
+                Icon(Icons.Default.TrendingUp, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Legend
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                listOf(
+                    Triple("Expense", LuxGoldChange, Color(0xFFD0BCFF)),
+                    Triple("Income", LuxGreen, Color(0xFF81C784)),
+                    Triple("Savings", LuxIceBlue, Color(0xFF4FC3F7))
+                ).forEach { (label, dark, light) ->
+                    val color = if (isDarkThemeGlobal) dark else light
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(8.dp).background(color, androidx.compose.foundation.shape.CircleShape))
+                        Spacer(Modifier.width(4.dp))
+                        Text(label, color = LuxMuted, fontSize = 10.sp)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Info panel
+            if (active != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(LuxDarkGray, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(active.label, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = LuxIvory)
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Exp: $currency${String.format("%,.0f", active.expense)}", fontSize = 11.sp, color = LuxGoldChange, fontWeight = FontWeight.Bold)
+                        Text("Inc: $currency${String.format("%,.0f", active.income)}", fontSize = 11.sp, color = LuxGreen, fontWeight = FontWeight.Bold)
+                        Text("Sav: $currency${String.format("%,.0f", active.savings)}", fontSize = 11.sp, color = LuxIceBlue, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Info panel of selected / active point
-            if (activePoint != null) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(LuxDarkGray, RoundedCornerShape(12.dp))
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = t("SELECTED DATE", "चयनित तिथि", "Selected Date"),
-                            fontSize = 9.sp,
-                            color = LuxMuted,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
-                        Text(
-                            text = activePoint.label,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = LuxIvory
-                        )
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(
-                            text = t("AMOUNT SPENT", "खर्च की गई राशि", "Amount Spent"),
-                            fontSize = 9.sp,
-                            color = LuxMuted,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.sp
-                        )
-                        Text(
-                            text = "$currency${String.format("%,.2f", activePoint.amount)}",
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Black,
-                            color = if (activePoint.amount > 0) LuxGoldChange else LuxGreen
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Canvas drawing area
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(180.dp)
-                    .background(Color.Transparent)
-            ) {
-                val canvasWidth = maxWidth
-                val canvasHeight = maxHeight
-                
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(180.dp)) {
                 val density = androidx.compose.ui.platform.LocalDensity.current
                 val leftMarginPx = with(density) { 40.dp.toPx() }
                 val rightMarginPx = with(density) { 12.dp.toPx() }
                 val topMarginPx = with(density) { 15.dp.toPx() }
-                val bottomMarginPx = with(density) { 25.dp.toPx() }
-                
-                val graphWidthPx = with(density) { (canvasWidth - 52.dp).toPx() }
-                val graphHeightPx = with(density) { (canvasHeight - 40.dp).toPx() }
-                
-                val maxAmount = remember(dailyData) {
-                    maxOf(dailyData.maxOfOrNull { it.amount } ?: 100.0, 100.0)
+                val graphWidthPx = with(density) { (maxWidth - 52.dp).toPx() }
+                val graphHeightPx = with(density) { (maxHeight - 40.dp).toPx() }
+
+                val maxAmt = remember(dailySeries) {
+                    maxOf(
+                        dailySeries.maxOfOrNull { maxOf(it.expense, it.income, it.savings) } ?: 100.0,
+                        100.0
+                    )
                 }
 
+                val seriesDef = listOf(
+                    Triple({ s: DailySeries -> s.expense }, LuxGoldChange, Color(0xFFEADDFF)),
+                    Triple({ s: DailySeries -> s.income }, LuxGreen, Color(0xFFA5D6A7)),
+                    Triple({ s: DailySeries -> s.savings }, LuxIceBlue, Color(0xFF81D4FA))
+                )
+
                 Canvas(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(dailyData, maxAmount) {
-                            detectDragGestures(
-                                onDragStart = { offset ->
-                                    val x = offset.x
-                                    val stepX = graphWidthPx / 29f
-                                    val rawIndex = kotlin.math.round((x - leftMarginPx) / stepX).toInt()
-                                    selectedPointIndex = rawIndex.coerceIn(0, 29)
-                                },
-                                onDrag = { change, dragAmount ->
-                                    val x = change.position.x
-                                    val stepX = graphWidthPx / 29f
-                                    val rawIndex = kotlin.math.round((x - leftMarginPx) / stepX).toInt()
-                                    selectedPointIndex = rawIndex.coerceIn(0, 29)
-                                },
-                                onDragEnd = {},
-                                onDragCancel = {}
-                            )
-                        }
+                    modifier = Modifier.fillMaxSize().pointerInput(dailySeries, maxAmt) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                val stepX = graphWidthPx / 29f
+                                selectedPointIndex = kotlin.math.round((offset.x - leftMarginPx) / stepX).toInt().coerceIn(0, 29)
+                            },
+                            onDrag = { change, _ ->
+                                val stepX = graphWidthPx / 29f
+                                selectedPointIndex = kotlin.math.round((change.position.x - leftMarginPx) / stepX).toInt().coerceIn(0, 29)
+                            },
+                            onDragEnd = {}, onDragCancel = {}
+                        )
+                    }
                 ) {
                     val width = size.width
-                    val height = size.height
-                    
                     val stepX = graphWidthPx / 29f
-                    
-                    // 1. Draw horizontal grid lines (Y Axis guidelines)
-                    val gridLines = 4
-                    for (i in 0..gridLines) {
-                        val gridAmount = (maxAmount / gridLines) * i
-                        val relativeY = topMarginPx + graphHeightPx - (gridAmount / maxAmount).toFloat() * graphHeightPx
-                        
-                        drawLine(
-                            color = Color.Gray.copy(alpha = 0.15f),
-                            start = androidx.compose.ui.geometry.Offset(leftMarginPx, relativeY),
-                            end = androidx.compose.ui.geometry.Offset(width - rightMarginPx, relativeY),
-                            strokeWidth = 1.dp.toPx()
-                        )
-                        
-                        // Y labels
+
+                    // Grid lines
+                    for (i in 0..4) {
+                        val relY = topMarginPx + graphHeightPx - (i.toFloat() / 4f) * graphHeightPx
+                        drawLine(Color.Gray.copy(alpha = 0.15f), androidx.compose.ui.geometry.Offset(leftMarginPx, relY), androidx.compose.ui.geometry.Offset(width - rightMarginPx, relY), 1.dp.toPx())
+                        val amt = (maxAmt / 4.0) * i
                         drawContext.canvas.nativeCanvas.drawText(
-                            "$currency${if (gridAmount >= 1000) String.format("%.1fk", gridAmount / 1000) else String.format("%.0f", gridAmount)}",
-                            10f,
-                            relativeY + 4.dp.toPx(),
+                            "$currency${if (amt >= 1000) String.format("%.1fk", amt / 1000) else String.format("%.0f", amt)}",
+                            10f, relY + 4.dp.toPx(),
                             android.graphics.Paint().apply {
                                 color = if (isDarkThemeGlobal) android.graphics.Color.LTGRAY else android.graphics.Color.DKGRAY
                                 textSize = 8.dp.toPx()
@@ -6956,124 +6942,50 @@ fun Last30DaysSpendingTrendsChart(
                         )
                     }
 
-                    // 2. Draw X Axis timeline label guides (show periodic labels)
-                    val xLabelIndices = listOf(0, 7, 14, 21, 29)
-                    for (i in xLabelIndices) {
-                        val relativeX = leftMarginPx + i * stepX
-                        val point = dailyData.getOrNull(i) ?: continue
-                        
+                    // X labels
+                    listOf(0, 7, 14, 21, 29).forEach { i ->
+                        val lbl = dailySeries.getOrNull(i)?.label ?: return@forEach
                         drawContext.canvas.nativeCanvas.drawText(
-                            point.label,
-                            relativeX - 12.dp.toPx(),
-                            height - 4.dp.toPx(),
+                            lbl, leftMarginPx + i * stepX - 12.dp.toPx(), size.height - 4.dp.toPx(),
                             android.graphics.Paint().apply {
                                 color = if (isDarkThemeGlobal) android.graphics.Color.GRAY else android.graphics.Color.DKGRAY
                                 textSize = 8.dp.toPx()
-                                typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
                             }
                         )
                     }
 
-                    // 3. Build coordinate path
-                    val coords = dailyData.mapIndexed { i, p ->
-                        val relativeX = leftMarginPx + i * stepX
-                        val relativeY = topMarginPx + graphHeightPx - (p.amount / maxAmount).toFloat() * graphHeightPx
-                        androidx.compose.ui.geometry.Offset(relativeX, relativeY)
+                    // Draw each series
+                    seriesDef.forEach { (getValue, darkColor, lightColor) ->
+                        val lineColor = if (isDarkThemeGlobal) darkColor else lightColor
+                        val coords = dailySeries.mapIndexed { i, s ->
+                            val relX = leftMarginPx + i * stepX
+                            val relY = topMarginPx + graphHeightPx - (getValue(s) / maxAmt).toFloat() * graphHeightPx
+                            androidx.compose.ui.geometry.Offset(relX, relY)
+                        }
+                        if (coords.size < 2) return@forEach
+                        val path = Path()
+                        path.moveTo(coords[0].x, coords[0].y)
+                        for (i in 1 until coords.size) {
+                            val prev = coords[i - 1]; val curr = coords[i]
+                            val cx = prev.x + (curr.x - prev.x) / 2f
+                            path.cubicTo(cx, prev.y, cx, curr.y, curr.x, curr.y)
+                        }
+                        drawPath(path, lineColor.copy(alpha = 0.3f), style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round))
+                        drawPath(path, lineColor, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
                     }
 
-                    if (coords.isNotEmpty()) {
-                        val linePath = Path()
-                        val areaPath = Path()
-                        
-                        linePath.moveTo(coords[0].x, coords[0].y)
-                        areaPath.moveTo(coords[0].x, coords[0].y)
-                        
-                        for (i in 1 until coords.size) {
-                            val prev = coords[i - 1]
-                            val curr = coords[i]
-                            
-                            val cp1X = prev.x + (curr.x - prev.x) / 2f
-                            val cp1Y = prev.y
-                            val cp2X = prev.x + (curr.x - prev.x) / 2f
-                            val cp2Y = curr.y
-                            
-                            linePath.cubicTo(cp1X, cp1Y, cp2X, cp2Y, curr.x, curr.y)
-                            areaPath.cubicTo(cp1X, cp1Y, cp2X, cp1Y, curr.x, curr.y)
-                        }
-                        
-                        areaPath.lineTo(coords.last().x, topMarginPx + graphHeightPx)
-                        areaPath.lineTo(coords.first().x, topMarginPx + graphHeightPx)
-                        areaPath.close()
-
-                        // Area fill
-                        drawPath(
-                            path = areaPath,
-                            brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                                colors = listOf(
-                                    LuxGoldChange.copy(alpha = 0.35f),
-                                    LuxGoldChange.copy(alpha = 0.00f)
-                                ),
-                                startY = topMarginPx,
-                                endY = topMarginPx + graphHeightPx
-                            )
-                        )
-
-                        // Ambient under-glow line layer
-                        drawPath(
-                            path = linePath,
-                            color = LuxGoldChange.copy(alpha = 0.35f),
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(
-                                width = 6.dp.toPx(),
-                                cap = StrokeCap.Round,
-                                join = androidx.compose.ui.graphics.StrokeJoin.Round
-                            )
-                        )
-
-                        // Trend line foreground core trace
-                        drawPath(
-                            path = linePath,
-                            color = LuxGoldChange,
-                            style = androidx.compose.ui.graphics.drawscope.Stroke(
-                                width = 2.5.dp.toPx(),
-                                cap = StrokeCap.Round,
-                                join = androidx.compose.ui.graphics.StrokeJoin.Round
-                            )
-                        )
-
-                        // Tracker point dot representation
-                        val selIdx = activeIndex
-                        val selCoord = coords.getOrNull(selIdx)
-                        if (selCoord != null) {
-                            // Vertical tracking guideline
-                            drawLine(
-                                color = LuxGoldChange.copy(alpha = 0.4f),
-                                start = androidx.compose.ui.geometry.Offset(selCoord.x, topMarginPx),
-                                end = androidx.compose.ui.geometry.Offset(selCoord.x, topMarginPx + graphHeightPx),
-                                strokeWidth = 1.2.dp.toPx(),
-                                pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
-                            )
-                            
-                            // Pulse circle
-                            drawCircle(
-                                color = LuxGoldChange.copy(alpha = 0.25f),
-                                radius = 9.dp.toPx(),
-                                center = selCoord
-                            )
-                            
-                            // Core point
-                            drawCircle(
-                                color = LuxGoldChange,
-                                radius = 4.5.dp.toPx(),
-                                center = selCoord
-                            )
-                            
-                            // Highlight reflection
-                            drawCircle(
-                                color = Color.White,
-                                radius = 2.dp.toPx(),
-                                center = selCoord
-                            )
-                        }
+                    // Active tracker (expense series dot)
+                    val expCoords = dailySeries.mapIndexed { i, s ->
+                        val relX = leftMarginPx + i * stepX
+                        val relY = topMarginPx + graphHeightPx - (s.expense / maxAmt).toFloat() * graphHeightPx
+                        androidx.compose.ui.geometry.Offset(relX, relY)
+                    }
+                    val selCoord = expCoords.getOrNull(activeIndex)
+                    if (selCoord != null) {
+                        drawLine(LuxGoldChange.copy(alpha = 0.4f), androidx.compose.ui.geometry.Offset(selCoord.x, topMarginPx), androidx.compose.ui.geometry.Offset(selCoord.x, topMarginPx + graphHeightPx), 1.2.dp.toPx(), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f))
+                        drawCircle(LuxGoldChange.copy(alpha = 0.25f), 9.dp.toPx(), selCoord)
+                        drawCircle(LuxGoldChange, 4.5.dp.toPx(), selCoord)
+                        drawCircle(Color.White, 2.dp.toPx(), selCoord)
                     }
                 }
             }
