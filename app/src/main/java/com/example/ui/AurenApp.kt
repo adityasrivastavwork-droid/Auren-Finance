@@ -2213,7 +2213,7 @@ fun HomeScreen(
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
                 .padding(16.dp)
                 .verticalScroll(rememberScrollState())
         ) {
@@ -6803,83 +6803,138 @@ fun Last30DaysSpendingTrendsChart(
     currency: String,
     modifier: Modifier = Modifier
 ) {
-    data class DailySeries(val label: String, val expense: Double, val income: Double, val savings: Double)
+    // View mode: "type" = by transaction methodology, "category" = by budget category
+    var viewMode by remember { mutableStateOf("type") }
+    var selectedPointIndex by remember { mutableStateOf<Int?>(null) }
 
-    val dailySeries = remember(transactions) {
+    data class DailyPoint(val label: String, val values: Map<String, Double>)
+
+    val typeKeys = listOf("Expense", "Income", "Savings")
+    val categoryKeys = listOf("Groceries", "Rent", "Utilities", "Dining", "Shopping", "EMI", "Other")
+
+    val typeColors = mapOf(
+        "Expense" to Pair(LuxGoldChange, Color(0xFFEADDFF)),
+        "Income" to Pair(LuxGreen, Color(0xFFA5D6A7)),
+        "Savings" to Pair(LuxIceBlue, Color(0xFF81D4FA))
+    )
+    val categoryColors = mapOf(
+        "Groceries" to Pair(Color(0xFF81C784), Color(0xFF388E3C)),
+        "Rent" to Pair(Color(0xFFFFB74D), Color(0xFFE65100)),
+        "Utilities" to Pair(Color(0xFF4FC3F7), Color(0xFF0277BD)),
+        "Dining" to Pair(Color(0xFFCE93D8), Color(0xFF7B1FA2)),
+        "Shopping" to Pair(Color(0xFFD0BCFF), Color(0xFF6750A4)),
+        "EMI" to Pair(Color(0xFFF48FB1), Color(0xFFC2185B)),
+        "Other" to Pair(Color(0xFFB0BEC5), Color(0xFF546E7A))
+    )
+
+    val dailyPoints = remember(transactions, viewMode) {
         val monthLabels = listOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
         List(30) { index ->
             val offset = 29 - index
             val targetCal = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -offset) }
             val dayOfYear = targetCal.get(Calendar.DAY_OF_YEAR)
             val year = targetCal.get(Calendar.YEAR)
+            val label = "${targetCal.get(Calendar.DAY_OF_MONTH)} ${monthLabels.getOrElse(targetCal.get(Calendar.MONTH)) { "" }}"
             val dayTx = transactions.filter {
                 val c = Calendar.getInstance().apply { timeInMillis = it.date }
                 c.get(Calendar.DAY_OF_YEAR) == dayOfYear && c.get(Calendar.YEAR) == year
             }
-            val label = "${targetCal.get(Calendar.DAY_OF_MONTH)} ${monthLabels.getOrElse(targetCal.get(Calendar.MONTH)) { "" }}"
-            DailySeries(
-                label = label,
-                expense = dayTx.filter { it.type.equals("Expense", true) }.sumOf { it.amount },
-                income = dayTx.filter { it.type.equals("Income", true) }.sumOf { it.amount },
-                savings = dayTx.filter { it.type.equals("Savings", true) }.sumOf { it.amount }
-            )
+            if (viewMode == "type") {
+                DailyPoint(label, typeKeys.associateWith { key -> dayTx.filter { it.type.equals(key, true) }.sumOf { it.amount } })
+            } else {
+                DailyPoint(label, categoryKeys.associateWith { cat ->
+                    dayTx.filter { it.type.equals("Expense", true) && it.category.equals(cat, true) }.sumOf { it.amount }
+                }.let { base ->
+                    // "Other" = expenses not matching named categories
+                    val namedSum = categoryKeys.dropLast(1).sumOf { base[it] ?: 0.0 }
+                    val allExpense = dayTx.filter { it.type.equals("Expense", true) }.sumOf { it.amount }
+                    base + mapOf("Other" to maxOf(0.0, allExpense - namedSum))
+                })
+            }
         }
     }
 
-    var selectedPointIndex by remember { mutableStateOf<Int?>(null) }
+    val activeKeys = if (viewMode == "type") typeKeys else categoryKeys
+    val colorMap = if (viewMode == "type") typeColors else categoryColors
     val activeIndex = selectedPointIndex ?: 29
-    val active = dailySeries.getOrNull(activeIndex)
+    val active = dailyPoints.getOrNull(activeIndex)
 
-    CinematicGlassCard(
-        modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(28.dp)
-    ) {
+    CinematicGlassCard(modifier = modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp)) {
         Column(modifier = Modifier.fillMaxWidth().padding(24.dp)) {
+
+            // Header + switcher
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column {
                     Text(t("30-DAY SPENDING TRENDS", "30-दिवसीय खर्च चार्ट", "30-Day Spending trends"), style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
-                    Text(t("Expenses · Income · Savings", "खर्च · आय · बचत", "Expenses · Income · Savings"), style = Typography.bodyMedium, color = LuxMuted)
+                    Text(if (viewMode == "type") t("By Transaction Type", "लेन-देन प्रकार", "By Type") else t("By Budget Category", "बजट श्रेणी", "By Category"), style = Typography.bodyMedium, color = LuxMuted)
                 }
                 Icon(Icons.Default.TrendingUp, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(24.dp))
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Legend
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                listOf(
-                    Triple("Expense", LuxGoldChange, Color(0xFFD0BCFF)),
-                    Triple("Income", LuxGreen, Color(0xFF81C784)),
-                    Triple("Savings", LuxIceBlue, Color(0xFF4FC3F7))
-                ).forEach { (label, dark, light) ->
-                    val color = if (isDarkThemeGlobal) dark else light
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(8.dp).background(color, androidx.compose.foundation.shape.CircleShape))
-                        Spacer(Modifier.width(4.dp))
-                        Text(label, color = LuxMuted, fontSize = 10.sp)
+            // Mode switcher pills
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(LuxCardGray, RoundedCornerShape(10.dp))
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                listOf("type" to "By Type", "category" to "By Category").forEach { (mode, label) ->
+                    val selected = viewMode == mode
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (selected) LuxGoldChange else Color.Transparent)
+                            .clickable {
+                                viewMode = mode
+                                selectedPointIndex = null
+                            }
+                            .padding(vertical = 7.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(label, color = if (selected) LuxBlack else LuxMuted, fontSize = 12.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
-            // Info panel
+            // Legend (first 4 keys to avoid overflow)
+            Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                activeKeys.forEach { key ->
+                    val (dark, light) = colorMap[key] ?: Pair(LuxMuted, LuxMuted)
+                    val color = if (isDarkThemeGlobal) dark else light
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(8.dp).background(color, androidx.compose.foundation.shape.CircleShape))
+                        Spacer(Modifier.width(4.dp))
+                        Text(key, color = LuxMuted, fontSize = 10.sp)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Info panel for selected point
             if (active != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth().background(LuxDarkGray, RoundedCornerShape(12.dp)).padding(horizontal = 14.dp, vertical = 10.dp),
                     horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(active.label, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = LuxIvory)
+                    Text(active.label, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = LuxIvory)
                     Column(horizontalAlignment = Alignment.End) {
-                        Text("Exp: $currency${String.format("%,.0f", active.expense)}", fontSize = 11.sp, color = LuxGoldChange, fontWeight = FontWeight.Bold)
-                        Text("Inc: $currency${String.format("%,.0f", active.income)}", fontSize = 11.sp, color = LuxGreen, fontWeight = FontWeight.Bold)
-                        Text("Sav: $currency${String.format("%,.0f", active.savings)}", fontSize = 11.sp, color = LuxIceBlue, fontWeight = FontWeight.Bold)
+                        activeKeys.filter { (active.values[it] ?: 0.0) > 0.0 }.take(3).forEach { key ->
+                            val (dark, light) = colorMap[key] ?: Pair(LuxMuted, LuxMuted)
+                            Text("$key: $currency${String.format("%,.0f", active.values[key] ?: 0.0)}", fontSize = 10.sp, color = if (isDarkThemeGlobal) dark else light, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
+                Spacer(modifier = Modifier.height(12.dp))
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
+            // Canvas
             BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(180.dp)) {
                 val density = androidx.compose.ui.platform.LocalDensity.current
                 val leftMarginPx = with(density) { 40.dp.toPx() }
@@ -6888,21 +6943,12 @@ fun Last30DaysSpendingTrendsChart(
                 val graphWidthPx = with(density) { (maxWidth - 52.dp).toPx() }
                 val graphHeightPx = with(density) { (maxHeight - 40.dp).toPx() }
 
-                val maxAmt = remember(dailySeries) {
-                    maxOf(
-                        dailySeries.maxOfOrNull { maxOf(it.expense, it.income, it.savings) } ?: 100.0,
-                        100.0
-                    )
+                val maxAmt = remember(dailyPoints, activeKeys) {
+                    maxOf(dailyPoints.maxOfOrNull { p -> activeKeys.maxOfOrNull { p.values[it] ?: 0.0 } ?: 0.0 } ?: 100.0, 100.0)
                 }
 
-                val seriesDef = listOf(
-                    Triple({ s: DailySeries -> s.expense }, LuxGoldChange, Color(0xFFEADDFF)),
-                    Triple({ s: DailySeries -> s.income }, LuxGreen, Color(0xFFA5D6A7)),
-                    Triple({ s: DailySeries -> s.savings }, LuxIceBlue, Color(0xFF81D4FA))
-                )
-
                 Canvas(
-                    modifier = Modifier.fillMaxSize().pointerInput(dailySeries, maxAmt) {
+                    modifier = Modifier.fillMaxSize().pointerInput(dailyPoints, maxAmt) {
                         detectDragGestures(
                             onDragStart = { offset ->
                                 val stepX = graphWidthPx / 29f
@@ -6919,7 +6965,7 @@ fun Last30DaysSpendingTrendsChart(
                     val width = size.width
                     val stepX = graphWidthPx / 29f
 
-                    // Grid lines
+                    // Grid
                     for (i in 0..4) {
                         val relY = topMarginPx + graphHeightPx - (i.toFloat() / 4f) * graphHeightPx
                         drawLine(Color.Gray.copy(alpha = 0.15f), androidx.compose.ui.geometry.Offset(leftMarginPx, relY), androidx.compose.ui.geometry.Offset(width - rightMarginPx, relY), 1.dp.toPx())
@@ -6934,10 +6980,8 @@ fun Last30DaysSpendingTrendsChart(
                             }
                         )
                     }
-
-                    // X labels
                     listOf(0, 7, 14, 21, 29).forEach { i ->
-                        val lbl = dailySeries.getOrNull(i)?.label ?: return@forEach
+                        val lbl = dailyPoints.getOrNull(i)?.label ?: return@forEach
                         drawContext.canvas.nativeCanvas.drawText(
                             lbl, leftMarginPx + i * stepX - 12.dp.toPx(), size.height - 4.dp.toPx(),
                             android.graphics.Paint().apply {
@@ -6947,12 +6991,14 @@ fun Last30DaysSpendingTrendsChart(
                         )
                     }
 
-                    // Draw each series
-                    seriesDef.forEach { (getValue, darkColor, lightColor) ->
-                        val lineColor = if (isDarkThemeGlobal) darkColor else lightColor
-                        val coords = dailySeries.mapIndexed { i, s ->
+                    // Draw each series line
+                    activeKeys.forEach { key ->
+                        val (dark, light) = colorMap[key] ?: Pair(LuxMuted, LuxMuted)
+                        val lineColor = if (isDarkThemeGlobal) dark else light
+                        val coords = dailyPoints.mapIndexed { i, p ->
                             val relX = leftMarginPx + i * stepX
-                            val relY = topMarginPx + graphHeightPx - (getValue(s) / maxAmt).toFloat() * graphHeightPx
+                            val v = (p.values[key] ?: 0.0)
+                            val relY = topMarginPx + graphHeightPx - (v / maxAmt).toFloat() * graphHeightPx
                             androidx.compose.ui.geometry.Offset(relX, relY)
                         }
                         if (coords.size < 2) return@forEach
@@ -6963,17 +7009,19 @@ fun Last30DaysSpendingTrendsChart(
                             val cx = prev.x + (curr.x - prev.x) / 2f
                             path.cubicTo(cx, prev.y, cx, curr.y, curr.x, curr.y)
                         }
-                        drawPath(path, lineColor.copy(alpha = 0.3f), style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round))
+                        drawPath(path, lineColor.copy(alpha = 0.25f), style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round))
                         drawPath(path, lineColor, style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
                     }
 
-                    // Active tracker (expense series dot)
-                    val expCoords = dailySeries.mapIndexed { i, s ->
+                    // Tracker dot on first active series
+                    val firstKey = activeKeys.first()
+                    val firstCoords = dailyPoints.mapIndexed { i, p ->
                         val relX = leftMarginPx + i * stepX
-                        val relY = topMarginPx + graphHeightPx - (s.expense / maxAmt).toFloat() * graphHeightPx
+                        val v = (p.values[firstKey] ?: 0.0)
+                        val relY = topMarginPx + graphHeightPx - (v / maxAmt).toFloat() * graphHeightPx
                         androidx.compose.ui.geometry.Offset(relX, relY)
                     }
-                    val selCoord = expCoords.getOrNull(activeIndex)
+                    val selCoord = firstCoords.getOrNull(activeIndex)
                     if (selCoord != null) {
                         drawLine(LuxGoldChange.copy(alpha = 0.4f), androidx.compose.ui.geometry.Offset(selCoord.x, topMarginPx), androidx.compose.ui.geometry.Offset(selCoord.x, topMarginPx + graphHeightPx), 1.2.dp.toPx(), pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f))
                         drawCircle(LuxGoldChange.copy(alpha = 0.25f), 9.dp.toPx(), selCoord)
