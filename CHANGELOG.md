@@ -4,7 +4,21 @@ All notable changes to this project are documented here.
 
 ## [Unreleased] — 2026-06-27
 
-### Added — Onboarding v4 (multi-step expansion: 6 → 8 steps)
+### Fixed — Multi-issue UX patch (13 fixes)
+- **Long-term Planning Hub sliders**: Capped total at 100% — each slider's max is now `(100 - sum of other sliders)`, preventing over-allocation.
+- **Active Secure Ledger Profiles (dark mode)**: Added `focusedTextColor`, `unfocusedTextColor`, `cursorColor`, and label colors to all `OutlinedTextField` in the section so text is visible in dark mode.
+- **Sidebar access from all screens**: Added `onSettingsClick: () -> Unit` param to `PlanScreen`, `InsightsScreen`, `CoachScreen`. All three now show a hamburger `Menu` icon in their header to open the sidebar.
+- **Bottom content clipping**: Added `Spacer(height = 100.dp)` at the end of `HomeScreen`, `InsightsScreen`, `BudgetSubView`, and `CoachScreen` to prevent content hiding behind the floating bottom nav bar.
+- **Bank feed island removed**: Removed `BankFeedSyncWidget` block from `HomeScreen` unconditionally.
+- **New-user onboarding-first flow**: Restructured `AurenApp` routing — new (unauthed) users see `OnboardingFlow` first, then `FirebaseAuthenticationScreen` after confirming all details. `PendingOnboardingData` stores onboarding results until auth completes, then commits to DB.
+- **Primary objective split into its own screen**: `STEP_OBJECTIVE_MODE` (combined) replaced with `STEP_OBJECTIVE` and `STEP_BUDGET_MODE` (two separate screens). `STEP_COUNT` bumped from 8 to 9.
+- **Bank name autocomplete**: `AccountEntryCard` (onboarding) and `AddAccountDialog` now show a live suggestion dropdown of 30+ major Indian and international banks when user types ≥ 2 characters.
+- **Dashboard widget order persisted**: `widgetOrder: String = ""` added to `UserProfile` (DB v5 migration). `DashboardStep` drag order saved via `persistOnboardingProgress` and committed via `onComplete`. `HomeScreen` renders charts in user's saved order using `viewModel.widgetOrder` StateFlow.
+- **Drag only from hamburger handle**: `DashboardStep` drag gesture moved from Card-level `pointerInput` to only the `DragHandle` icon's modifier — drag no longer triggers on card tap.
+- **Card shadow in light mode**: Replaced `graphicsLayer { shadowElevation }` (which caused purple tint from Material3 purple primary) with `Modifier.shadow(elevation = 2.dp, ambientColor = grey, spotColor = grey)` on `CinematicGlassCard` and `InteractiveGeometricCard`.
+- **Onboarding back button**: Removed "Back" text from `BottomBar` back button — now arrow icon only.
+
+
 - **`data class AccountEntry`** and **`data class RecurringEntry`** added to `OnboardingFlow.kt` at file scope for type-safe onboarding data transfer.
 - **Step 3 — Income rails (enhanced payday)**:
   - Three payday-type chips: "Specific Day" (existing number field), "Last Working Day", "Last Day of Month".

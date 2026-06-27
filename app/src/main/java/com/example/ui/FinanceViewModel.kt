@@ -81,6 +81,16 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         DashboardConfig.fromCsv(prof?.hiddenWidgets)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DashboardConfig.AllVisible)
 
+    val widgetOrder: StateFlow<List<com.example.data.WidgetId>> = profile.map { prof ->
+        val csv = prof?.widgetOrder ?: ""
+        if (csv.isBlank()) com.example.data.WidgetId.values().toList()
+        else {
+            val parsed = csv.split(",").mapNotNull { com.example.data.WidgetId.fromKey(it.trim()) }
+            val all = com.example.data.WidgetId.values().toList()
+            parsed + all.filter { it !in parsed }
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), com.example.data.WidgetId.values().toList())
+
     val totalDebtOutstanding: StateFlow<Double> = combine(debts, accounts) { dList, aList ->
         val standardDebts = dList.sumOf { it.outstandingAmount }
         val ccBalances = aList.filter { it.type == "Credit Card" }.sumOf { it.balance }
@@ -140,6 +150,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         currentBalance: Double,
         buffer: Double,
         hiddenWidgets: String = "",
+        widgetOrder: String = "",
         skipDefaultAccount: Boolean = false
     ) {
         viewModelScope.launch {
@@ -153,7 +164,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 safetyBuffer = buffer,
                 isOnboarded = true,
                 onboardingStep = -1,
-                hiddenWidgets = hiddenWidgets
+                hiddenWidgets = hiddenWidgets,
+                widgetOrder = widgetOrder
             )
             repository.saveProfile(merged)
 
@@ -184,7 +196,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         salary: Double? = null,
         payday: Int? = null,
         buffer: Double? = null,
-        hiddenWidgets: String? = null
+        hiddenWidgets: String? = null,
+        widgetOrder: String? = null
     ) {
         viewModelScope.launch {
             val current = repository.getProfileDirect() ?: UserProfile()
@@ -197,7 +210,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     salaryAmount = salary ?: current.salaryAmount,
                     salaryDate = (payday ?: current.salaryDate).coerceIn(1, 31),
                     safetyBuffer = buffer ?: current.safetyBuffer,
-                    hiddenWidgets = hiddenWidgets ?: current.hiddenWidgets
+                    hiddenWidgets = hiddenWidgets ?: current.hiddenWidgets,
+                    widgetOrder = widgetOrder ?: current.widgetOrder
                 )
             )
         }

@@ -31,7 +31,9 @@ data class UserProfile(
      * schema migration — see [com.example.data.WidgetId] for the canonical id list.
      */
     val hiddenWidgets: String = "",
-    val shakeToAddEnabled: Boolean = false
+    val shakeToAddEnabled: Boolean = false,
+    /** CSV of WidgetId keys in the user's preferred display order. Empty = default order. */
+    val widgetOrder: String = ""
 )
 
 @Entity(tableName = "accounts")

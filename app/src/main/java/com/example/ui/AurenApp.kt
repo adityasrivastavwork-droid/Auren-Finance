@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -52,6 +53,20 @@ import com.example.data.*
 import com.example.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
+
+private data class PendingOnboardingData(
+    val currency: String,
+    val objective: String,
+    val mode: String,
+    val salary: Double,
+    val payday: Int,
+    val balance: Double,
+    val buffer: Double,
+    val hiddenWidgets: String,
+    val accounts: List<com.example.ui.AccountEntry>,
+    val recurringItems: List<com.example.ui.RecurringEntry>,
+    val widgetOrder: String = ""
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -151,15 +166,10 @@ fun AurenApp(viewModel: FinanceViewModel) {
     var firebaseUserEmail by remember { mutableStateOf(prefs.getString("authed_email", "") ?: "") }
     val isProfileLoaded by viewModel.isProfileLoaded.collectAsStateWithLifecycle()
 
-    if (!isFirebaseAuthed) {
-         FirebaseAuthenticationScreen(
-             onAuthSuccess = { email ->
-                 prefs.edit().putBoolean("is_authed", true).putString("authed_email", email).apply()
-                 isFirebaseAuthed = true
-                 firebaseUserEmail = email
-             }
-         )
-    } else if (!isProfileLoaded) {
+    // Pending onboarding data to save after auth (for new-user flow: onboarding first, then login)
+    var pendingOnboardingData by remember { mutableStateOf<PendingOnboardingData?>(null) }
+
+    if (!isProfileLoaded && isFirebaseAuthed) {
          // Secure routing: Show premium loading gate while loading user profile from database
          val cinematicLoadingBackground = if (isDarkThemeGlobal) {
              Brush.verticalGradient(colors = listOf(Color(0xFF130E20), Color(0xFF08060A)))
@@ -178,15 +188,53 @@ fun AurenApp(viewModel: FinanceViewModel) {
                  CircularProgressIndicator(color = LuxGoldChange)
              }
          }
-    } else if (profile == null || !profile!!.isOnboarded) {
+    } else if (!isFirebaseAuthed && pendingOnboardingData == null && (profile == null || !profile!!.isOnboarded)) {
+        // New user: show onboarding first, login comes after review confirmation
         OnboardingFlow(
             profile = profile,
             viewModel = viewModel,
-            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems ->
+            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder ->
+                pendingOnboardingData = PendingOnboardingData(cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder)
+            }
+        )
+    } else if (!isFirebaseAuthed) {
+        // After onboarding confirm → show login to save user details
+        FirebaseAuthenticationScreen(
+            onAuthSuccess = { email ->
+                prefs.edit().putBoolean("is_authed", true).putString("authed_email", email).apply()
+                isFirebaseAuthed = true
+                firebaseUserEmail = email
+                // Commit pending onboarding data now that we have auth
+                val d = pendingOnboardingData
+                if (d != null) {
+                    viewModel.onboardUser(
+                        currency = d.currency, objective = d.objective, mode = d.mode,
+                        salary = d.salary, payday = d.payday, currentBalance = d.balance,
+                        buffer = d.buffer, hiddenWidgets = d.hiddenWidgets,
+                        widgetOrder = d.widgetOrder,
+                        skipDefaultAccount = d.accounts.isNotEmpty()
+                    )
+                    d.accounts.forEach { acc ->
+                        viewModel.addAccount(acc.name, acc.type, acc.balance, acc.creditLimit, if (acc.isPrimary) "Primary" else "")
+                    }
+                    d.recurringItems.forEach { item ->
+                        viewModel.addBill(item.name, item.amount, item.dueDay, item.category, item.isSubscription)
+                    }
+                    pendingOnboardingData = null
+                }
+            }
+        )
+    } else if (profile == null || !profile!!.isOnboarded) {
+        // Returning authed user who somehow didn't complete onboarding
+        OnboardingFlow(
+            profile = profile,
+            viewModel = viewModel,
+            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder ->
                 viewModel.onboardUser(
                     currency = cur, objective = obj, mode = md, salary = sal,
                     payday = pay, currentBalance = bal, buffer = buf,
                     hiddenWidgets = hidden,
+                    widgetOrder = widgetOrder,
                     skipDefaultAccount = accounts.isNotEmpty()
                 )
                 accounts.forEach { acc ->
@@ -302,7 +350,8 @@ fun AurenApp(viewModel: FinanceViewModel) {
                                 onAddDebtClick = { showAddDebtDialog = true },
                                 onDeleteBill = { itemPendingForDeletion = it },
                                 onDeleteGoal = { itemPendingForDeletion = it },
-                                onDeleteDebt = { itemPendingForDeletion = it }
+                                onDeleteDebt = { itemPendingForDeletion = it },
+                                onSettingsClick = { showSideBar = true }
                             )
                             "insights" -> InsightsScreen(
                                 viewModel = viewModel,
@@ -311,11 +360,13 @@ fun AurenApp(viewModel: FinanceViewModel) {
                                 profile = profile,
                                 currency = currency,
                                 totalUsableBalance = totalUsableBalance,
-                                totalDebt = totalDebtOutstanding
+                                totalDebt = totalDebtOutstanding,
+                                onSettingsClick = { showSideBar = true }
                             )
                             "coach" -> CoachScreen(
                                 viewModel = viewModel,
-                                currency = currency
+                                currency = currency,
+                                onSettingsClick = { showSideBar = true }
                             )
                         }
                     }
@@ -2074,8 +2125,17 @@ fun CinematicGlassCard(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
-                if (!isDarkThemeGlobal) shadowElevation = 4.dp.toPx()
             }
+            .then(
+                if (!isDarkThemeGlobal) {
+                    Modifier.shadow(
+                        elevation = 2.dp,
+                        shape = shape,
+                        ambientColor = Color(0xFFB0B0B0),
+                        spotColor = Color(0xFFB0B0B0)
+                    )
+                } else Modifier
+            )
             .then(
                 if (onClick != null) {
                     Modifier.clickable(
@@ -2121,6 +2181,7 @@ fun HomeScreen(
     val goalsState by viewModel.goals.collectAsStateWithLifecycle()
     val transactionsState by viewModel.transactions.collectAsStateWithLifecycle()
     val dashboardConfig by viewModel.dashboardConfig.collectAsStateWithLifecycle()
+    val widgetOrder by viewModel.widgetOrder.collectAsStateWithLifecycle()
 
     var showSideBar by remember { mutableStateOf(false) }
 
@@ -2451,38 +2512,45 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Predictive End-of-Month Savings Widget
-            if (dashboardConfig.isVisible(com.example.data.WidgetId.PredictiveSavings)) {
-                CinematicEntranceContainer(delayMillis = 350) {
-                    PredictiveEomSavingsWidget(
-                        salary = salaryVal,
-                        transactions = transactionsState ?: emptyList(),
-                        bills = bills,
-                        currency = currency
-                    )
+            // Chart widgets rendered in user's persisted order
+            widgetOrder.forEachIndexed { i, widget ->
+                if (!dashboardConfig.isVisible(widget)) return@forEachIndexed
+                val delay = 350 + i * 100
+                when (widget) {
+                    com.example.data.WidgetId.PredictiveSavings -> {
+                        CinematicEntranceContainer(delayMillis = delay) {
+                            PredictiveEomSavingsWidget(
+                                salary = salaryVal,
+                                transactions = transactionsState ?: emptyList(),
+                                bills = bills,
+                                currency = currency
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                    com.example.data.WidgetId.SpendingTrendsChart -> {
+                        CinematicEntranceContainer(delayMillis = delay) {
+                            Last30DaysSpendingTrendsChart(
+                                transactions = transactionsState ?: emptyList(),
+                                currency = currency
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                    com.example.data.WidgetId.SpendingVsSavingsChart -> {
+                        CinematicEntranceContainer(delayMillis = delay) {
+                            GeometricSpendingVsSavingsChart(
+                                transactions = transactionsState ?: emptyList(),
+                                currency = currency
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                    else -> { /* other widget types handled elsewhere */ }
                 }
-
-                Spacer(modifier = Modifier.height(24.dp))
             }
 
-            // 30-Day Spending Trends (Recharts-Style)
-            if (dashboardConfig.isVisible(com.example.data.WidgetId.SpendingTrendsChart)) {
-                CinematicEntranceContainer(delayMillis = 450) {
-                    Last30DaysSpendingTrendsChart(
-                        transactions = transactionsState ?: emptyList(),
-                        currency = currency
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-            }
-
-            // Spending vs Savings Visual allocation (Task 4)
-            if (dashboardConfig.isVisible(com.example.data.WidgetId.SpendingVsSavingsChart)) {
-                CinematicEntranceContainer(delayMillis = 550) {
-                    GeometricSpendingVsSavingsChart(
-                        transactions = transactionsState ?: emptyList(),
-                        currency = currency
+            // Action Deck
                     )
                 }
 
@@ -2522,19 +2590,6 @@ fun HomeScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
-
-            if (dashboardConfig.isVisible(com.example.data.WidgetId.BankFeedSync)) {
-                CinematicEntranceContainer(delayMillis = 750) {
-                    BankFeedSyncWidget(
-                        accounts = accounts,
-                        currency = currency,
-                        viewModel = viewModel,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(24.dp))
-            }
 
             // Recurring flagged bills widget (Task 3)
             var editingBillDialogState by remember { mutableStateOf<BillSubscription?>(null) }
@@ -2725,6 +2780,8 @@ fun HomeScreen(
                     }
                 }
             }
+    }
+        Spacer(modifier = Modifier.height(100.dp))
     }
 
     // Old dimming overlay removed
@@ -3344,7 +3401,8 @@ fun PlanScreen(
     onAddDebtClick: () -> Unit,
     onDeleteBill: (BillSubscription) -> Unit,
     onDeleteGoal: (FinancialGoal) -> Unit,
-    onDeleteDebt: (Debt) -> Unit
+    onDeleteDebt: (Debt) -> Unit,
+    onSettingsClick: () -> Unit = {}
 ) {
     val transactionsState by viewModel.transactions.collectAsStateWithLifecycle()
     var subTab by remember { mutableStateOf("budget") } // "budget", "bills", "debts", "goals"
@@ -3354,8 +3412,19 @@ fun PlanScreen(
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Text(text = "WEALTH STRATEGIZER", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
-        Text(text = "Long-term Planning Hub", style = Typography.headlineMedium, color = LuxIvory)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(text = "WEALTH STRATEGIZER", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
+                Text(text = "Long-term Planning Hub", style = Typography.headlineMedium, color = LuxIvory)
+            }
+            IconButton(onClick = onSettingsClick) {
+                Icon(imageVector = Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+            }
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -3585,7 +3654,9 @@ fun BudgetSubView(currency: String, salary: Double, viewModel: FinanceViewModel)
                 Slider(
                     value = valPct,
                     onValueChange = { newVal ->
-                        val roundedVal = newVal.coerceIn(0f, 100f)
+                        val others = totalAllocated - valPct
+                        val maxAllowed = (100f - others).coerceAtLeast(0f)
+                        val roundedVal = newVal.coerceIn(0f, maxAllowed)
                         when (idx) {
                             0 -> sliderEssentials = roundedVal
                             1 -> sliderDebts = roundedVal
@@ -3755,9 +3826,16 @@ fun BudgetSubView(currency: String, salary: Double, viewModel: FinanceViewModel)
                     OutlinedTextField(
                         value = salaryInput,
                         onValueChange = { salaryInput = it },
-                        label = { Text("Net Monthly Salary ($currency)") },
+                        label = { Text("Net Monthly Salary ($currency)", color = LuxMuted) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange),
+                        textStyle = TextStyle(color = LuxIvory),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = LuxGoldChange,
+                            unfocusedBorderColor = LuxCardGray,
+                            focusedTextColor = LuxIvory,
+                            unfocusedTextColor = LuxIvory,
+                            cursorColor = LuxGoldChange
+                        ),
                         modifier = Modifier.weight(1f)
                     )
 
@@ -3798,8 +3876,15 @@ fun BudgetSubView(currency: String, salary: Double, viewModel: FinanceViewModel)
                 OutlinedTextField(
                     value = essentialName,
                     onValueChange = { essentialName = it },
-                    label = { Text("Obligation Name (e.g., Internet, Gas, Rent)") },
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange),
+                    label = { Text("Obligation Name (e.g., Internet, Gas, Rent)", color = LuxMuted) },
+                    textStyle = TextStyle(color = LuxIvory),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LuxGoldChange,
+                        unfocusedBorderColor = LuxCardGray,
+                        focusedTextColor = LuxIvory,
+                        unfocusedTextColor = LuxIvory,
+                        cursorColor = LuxGoldChange
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -3812,18 +3897,32 @@ fun BudgetSubView(currency: String, salary: Double, viewModel: FinanceViewModel)
                     OutlinedTextField(
                         value = essentialAmount,
                         onValueChange = { essentialAmount = it },
-                        label = { Text("Amount ($currency)") },
+                        label = { Text("Amount ($currency)", color = LuxMuted) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange),
+                        textStyle = TextStyle(color = LuxIvory),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = LuxGoldChange,
+                            unfocusedBorderColor = LuxCardGray,
+                            focusedTextColor = LuxIvory,
+                            unfocusedTextColor = LuxIvory,
+                            cursorColor = LuxGoldChange
+                        ),
                         modifier = Modifier.weight(1f)
                     )
 
                     OutlinedTextField(
                         value = essentialDueDate,
                         onValueChange = { essentialDueDate = it },
-                        label = { Text("Due Day (1-31)") },
+                        label = { Text("Due Day (1-31)", color = LuxMuted) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange),
+                        textStyle = TextStyle(color = LuxIvory),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = LuxGoldChange,
+                            unfocusedBorderColor = LuxCardGray,
+                            focusedTextColor = LuxIvory,
+                            unfocusedTextColor = LuxIvory,
+                            cursorColor = LuxGoldChange
+                        ),
                         modifier = Modifier.weight(1f)
                     )
                 }
@@ -3878,6 +3977,7 @@ fun BudgetSubView(currency: String, salary: Double, viewModel: FinanceViewModel)
                 }
             }
         }
+        Spacer(modifier = Modifier.height(100.dp))
     }
 }
 
@@ -5014,7 +5114,8 @@ fun InsightsScreen(
     profile: UserProfile?,
     currency: String,
     totalUsableBalance: Double,
-    totalDebt: Double
+    totalDebt: Double,
+    onSettingsClick: () -> Unit = {}
 ) {
     // Scenario simulator states
     var mockSalaryGrowth by remember { mutableStateOf("10") } // percent
@@ -5040,6 +5141,10 @@ fun InsightsScreen(
                 Text(text = "CLARITY RADAR", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
                 Text(text = "Financial Health Audit", style = Typography.headlineMedium, color = LuxIvory)
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onSettingsClick) {
+                Icon(imageVector = Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+            }
             IconButton(
                 onClick = {
                     exportFinancialSummaryToPrint(
@@ -5063,6 +5168,7 @@ fun InsightsScreen(
                     tint = LuxGoldChange
                 )
             }
+            } // end Row (menu + export)
         }
 
         Spacer(modifier = Modifier.height(20.dp))
@@ -5295,6 +5401,7 @@ fun InsightsScreen(
                 )
             }
         }
+        Spacer(modifier = Modifier.height(100.dp))
     }
 }
 
@@ -5400,7 +5507,7 @@ private fun parseInlineMarkdown(text: String): androidx.compose.ui.text.Annotate
 
 // ---------------- COACH TAB SCREEN ----------------
 @Composable
-fun CoachScreen(viewModel: FinanceViewModel, currency: String) {
+fun CoachScreen(viewModel: FinanceViewModel, currency: String, onSettingsClick: () -> Unit = {}) {
     val chatMessages by viewModel.chatMessages.collectAsStateWithLifecycle()
     val isLoading by viewModel.isChatLoading.collectAsStateWithLifecycle()
 
@@ -5411,8 +5518,19 @@ fun CoachScreen(viewModel: FinanceViewModel, currency: String) {
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Text(text = t("AUREN PRIVATE CHAT", "ऑरेन प्राइवेट चैट", "Auren Chat Console"), style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
-        Text(text = t("AI Money Coach / Dost", "ऑरेन एआई सलाहकार", "Auren AI Money Dost"), style = Typography.headlineMedium, color = LuxIvory)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(text = t("AUREN PRIVATE CHAT", "ऑरेन प्राइवेट चैट", "Auren Chat Console"), style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 3.sp)
+                Text(text = t("AI Money Coach / Dost", "ऑरेन एआई सलाहकार", "Auren AI Money Dost"), style = Typography.headlineMedium, color = LuxIvory)
+            }
+            IconButton(onClick = onSettingsClick) {
+                Icon(imageVector = Icons.Default.Menu, contentDescription = "Settings", tint = LuxGoldChange, modifier = Modifier.size(24.dp))
+            }
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
@@ -5522,6 +5640,7 @@ fun CoachScreen(viewModel: FinanceViewModel, currency: String) {
                 Icon(imageVector = Icons.Default.Send, contentDescription = "Query", tint = LuxBlack)
             }
         }
+        Spacer(modifier = Modifier.height(100.dp))
     }
 }
 
@@ -6065,10 +6184,17 @@ fun InteractiveGeometricCard(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
-                shadowElevation = elevation.toPx()
-                shape = RoundedCornerShape(24.dp)
-                clip = true
             }
+            .then(
+                if (!isDarkThemeGlobal) {
+                    Modifier.shadow(
+                        elevation = elevation.coerceAtMost(4.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        ambientColor = Color(0xFFB0B0B0),
+                        spotColor = Color(0xFFB0B0B0)
+                    )
+                } else Modifier
+            )
             .then(
                 if (onClick != null) {
                     Modifier.clickable(
@@ -7753,13 +7879,56 @@ fun AddAccountDialog(
                 Text(text = "VAULT ACCOUNT SETUP", style = Typography.labelLarge, color = LuxGoldChange)
                 Text(text = "Add Asset Profile", style = Typography.titleLarge, color = LuxIvory, modifier = Modifier.padding(bottom = 16.dp))
 
+                val majorBanks = listOf(
+                    "HDFC Bank", "ICICI Bank", "SBI - State Bank of India", "Axis Bank", "Kotak Mahindra Bank",
+                    "Punjab National Bank", "Bank of Baroda", "Canara Bank", "Union Bank of India", "IndusInd Bank",
+                    "Yes Bank", "IDFC FIRST Bank", "Federal Bank", "South Indian Bank", "Karur Vysya Bank",
+                    "Bandhan Bank", "RBL Bank", "AU Small Finance Bank", "Ujjivan Small Finance Bank",
+                    "Paytm Payments Bank", "Airtel Payments Bank", "India Post Payments Bank",
+                    "Citibank", "HSBC", "Standard Chartered", "DBS Bank"
+                )
+                var showSuggestions by remember { mutableStateOf(false) }
+                val bankSuggestions = remember(name) {
+                    if (name.length >= 2) majorBanks.filter { it.contains(name, ignoreCase = true) }.take(5)
+                    else emptyList()
+                }
+
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Signature Identification name") },
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange),
+                    onValueChange = { name = it; showSuggestions = true },
+                    label = { Text("Bank / Account name", color = LuxMuted) },
+                    placeholder = { Text("e.g. HDFC Savings", color = LuxMuted.copy(alpha = 0.5f)) },
+                    textStyle = TextStyle(color = LuxIvory),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LuxGoldChange,
+                        unfocusedBorderColor = LuxCardGray,
+                        focusedTextColor = LuxIvory,
+                        unfocusedTextColor = LuxIvory,
+                        cursorColor = LuxGoldChange
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (showSuggestions && bankSuggestions.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = LuxCardGray),
+                        border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.3f)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Column {
+                            bankSuggestions.forEach { bank ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { name = bank; showSuggestions = false }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                ) {
+                                    Text(bank, color = LuxIvory, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(8.dp))
 

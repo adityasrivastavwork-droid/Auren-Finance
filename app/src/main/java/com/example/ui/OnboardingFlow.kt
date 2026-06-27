@@ -83,14 +83,15 @@ data class RecurringEntry(
 /* ─────────────────────── Step constants ─────────────────────── */
 
 private const val STEP_WELCOME = 0
-private const val STEP_OBJECTIVE_MODE = 1
-private const val STEP_INCOME = 2
-private const val STEP_FOUNDATION = 3
-private const val STEP_ACCOUNTS = 4
-private const val STEP_RECURRING = 5
-private const val STEP_DASHBOARD = 6
-private const val STEP_REVIEW = 7
-private const val STEP_COUNT = 8
+private const val STEP_OBJECTIVE = 1
+private const val STEP_BUDGET_MODE = 2
+private const val STEP_INCOME = 3
+private const val STEP_FOUNDATION = 4
+private const val STEP_ACCOUNTS = 5
+private const val STEP_RECURRING = 6
+private const val STEP_DASHBOARD = 7
+private const val STEP_REVIEW = 8
+private const val STEP_COUNT = 9
 
 /**
  * Multi-step onboarding wizard for Auren Money OS.
@@ -120,7 +121,8 @@ fun OnboardingFlow(
         buffer: Double,
         hiddenWidgets: String,
         accounts: List<AccountEntry>,
-        recurringItems: List<RecurringEntry>
+        recurringItems: List<RecurringEntry>,
+        widgetOrder: String
     ) -> Unit
 ) {
     val initialStep = (profile?.onboardingStep ?: 0).coerceIn(0, STEP_COUNT - 1)
@@ -217,7 +219,8 @@ fun OnboardingFlow(
             salary = salaryText.toDoubleOrNull(),
             payday = resolvedPayday(),
             buffer = bufferText.toDoubleOrNull(),
-            hiddenWidgets = dashboardConfig.toCsv()
+            hiddenWidgets = dashboardConfig.toCsv(),
+            widgetOrder = widgetOrderCsv
         )
         step = nextStep
     }
@@ -237,7 +240,8 @@ fun OnboardingFlow(
             bufferText.toDoubleOrNull() ?: 2000.0,
             dashboardConfig.toCsv(),
             accountEntries,
-            recurringEntries
+            recurringEntries,
+            widgetOrderCsv
         )
     }
 
@@ -245,7 +249,8 @@ fun OnboardingFlow(
 
     val ctaEnabled = when (step) {
         STEP_WELCOME -> true
-        STEP_OBJECTIVE_MODE -> objective.isNotBlank() && mode.isNotBlank()
+        STEP_OBJECTIVE -> objective.isNotBlank()
+        STEP_BUDGET_MODE -> mode.isNotBlank()
         STEP_INCOME -> salaryValid && paydayValid
         STEP_FOUNDATION -> balanceValid && bufferValid
         STEP_ACCOUNTS -> accountsValid
@@ -285,10 +290,12 @@ fun OnboardingFlow(
             ) {
                 when (s) {
                     STEP_WELCOME -> WelcomeStep()
-                    STEP_OBJECTIVE_MODE -> ObjectiveModeStep(
+                    STEP_OBJECTIVE -> ObjectiveStep(
                         objective = objective,
+                        onObjective = { objective = it }
+                    )
+                    STEP_BUDGET_MODE -> BudgetModeStep(
                         mode = mode,
-                        onObjective = { objective = it },
                         onMode = { mode = it }
                     )
                     STEP_INCOME -> IncomeStep(
@@ -430,15 +437,13 @@ private fun WelcomeStep() {
 }
 
 @Composable
-private fun ObjectiveModeStep(
+private fun ObjectiveStep(
     objective: String,
-    mode: String,
-    onObjective: (String) -> Unit,
-    onMode: (String) -> Unit
+    onObjective: (String) -> Unit
 ) {
     StepHeader(
         title = "What are we building?",
-        subtitle = "Your main objective and the discipline mode that fits your life."
+        subtitle = "Choose your primary financial goal for Auren to guide you towards."
     )
     SectionLabel("Primary objective")
     listOf(
@@ -454,6 +459,17 @@ private fun ObjectiveModeStep(
             onClick = { onObjective(k) }
         )
     }
+}
+
+@Composable
+private fun BudgetModeStep(
+    mode: String,
+    onMode: (String) -> Unit
+) {
+    StepHeader(
+        title = "Pick your discipline mode",
+        subtitle = "This shapes how strictly Auren enforces your daily spend limits."
+    )
     SectionLabel("Budget mode")
     listOf(
         "Strict Mode" to "Hardest. Bills + buffer reserved first; Safe-to-Spend stays low to enforce discipline.",
@@ -839,6 +855,17 @@ private fun AccountEntryCard(
 ) {
     val accountTypes = listOf("Savings", "Current", "Wallet", "Credit Card", "Investment")
 
+    val majorBanks = listOf(
+        "HDFC Bank", "ICICI Bank", "SBI - State Bank of India", "Axis Bank", "Kotak Mahindra Bank",
+        "Punjab National Bank", "Bank of Baroda", "Canara Bank", "Union Bank of India", "IndusInd Bank",
+        "Yes Bank", "IDFC FIRST Bank", "Federal Bank", "South Indian Bank", "Karur Vysya Bank",
+        "City Union Bank", "Bandhan Bank", "RBL Bank", "DCB Bank", "Nainital Bank",
+        "AU Small Finance Bank", "Ujjivan Small Finance Bank", "Equitas Small Finance Bank",
+        "ESAF Small Finance Bank", "Fincare Small Finance Bank",
+        "Paytm Payments Bank", "Airtel Payments Bank", "India Post Payments Bank", "NSDL Payments Bank",
+        "Citibank", "HSBC", "Standard Chartered", "Deutsche Bank", "DBS Bank"
+    )
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = LuxCardGray.copy(alpha = 0.4f)),
@@ -850,21 +877,58 @@ private fun AccountEntryCard(
     ) {
         Box(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(14.dp)) {
-                // Name field
+                // Bank name field with autocomplete suggestions
+                var showSuggestions by remember { mutableStateOf(false) }
+                val suggestions = remember(entry.name) {
+                    if (entry.name.length >= 2) {
+                        majorBanks.filter { it.contains(entry.name, ignoreCase = true) }.take(5)
+                    } else emptyList()
+                }
+
                 OutlinedTextField(
                     value = entry.name,
-                    onValueChange = { onUpdate(entry.copy(name = it)) },
+                    onValueChange = {
+                        onUpdate(entry.copy(name = it))
+                        showSuggestions = true
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    label = { Text("Account name (e.g. HDFC Savings)", color = LuxMuted, fontSize = 11.sp) },
+                    label = { Text("Bank / Account name", color = LuxMuted, fontSize = 11.sp) },
+                    placeholder = { Text("e.g. HDFC Savings", color = LuxMuted.copy(alpha = 0.5f), fontSize = 12.sp) },
                     textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = LuxGoldChange,
                         unfocusedBorderColor = LuxCardGray,
+                        focusedTextColor = LuxIvory,
+                        unfocusedTextColor = LuxIvory,
                         cursorColor = LuxGoldChange
                     ),
                     shape = RoundedCornerShape(12.dp)
                 )
+                if (showSuggestions && suggestions.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = LuxCardGray),
+                        border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.3f)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Column {
+                            suggestions.forEach { bank ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            onUpdate(entry.copy(name = bank))
+                                            showSuggestions = false
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                ) {
+                                    Text(bank, color = LuxIvory, fontSize = 13.sp)
+                                }
+                            }
+                        }
+                    }
+                }
                 Spacer(Modifier.height(10.dp))
 
                 // Type chips
@@ -1205,7 +1269,7 @@ private fun DashboardStep(
 ) {
     StepHeader(
         title = "Tune your dashboard",
-        subtitle = "Drag to reorder · toggle on or off"
+        subtitle = "Drag the ≡ handle to reorder · tap switch to toggle"
     )
 
     // Drag state
@@ -1222,51 +1286,7 @@ private fun DashboardStep(
             modifier = Modifier
                 .fillMaxWidth()
                 .zIndex(if (isDragged) 1f else 0f)
-                .offset(y = if (isDragged) dragOffsetY.dp else 0.dp)
-                .clickable { onToggle(w) }
-                .pointerInput(index) {
-                    detectDragGestures(
-                        onDragStart = {
-                            draggedIndex = index
-                            dragOffsetY = 0f
-                        },
-                        onDragEnd = {
-                            draggedIndex = null
-                            dragOffsetY = 0f
-                        },
-                        onDragCancel = {
-                            draggedIndex = null
-                            dragOffsetY = 0f
-                        },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            dragOffsetY += dragAmount.y / 3f
-                            // Swap when dragged more than half a card height
-                            val halfCard = cardHeightPx / 2f
-                            val currentIdx = draggedIndex ?: return@detectDragGestures
-                            when {
-                                dragOffsetY > halfCard && currentIdx < orderedWidgets.size - 1 -> {
-                                    val newList = orderedWidgets.toMutableList()
-                                    val tmp = newList[currentIdx]
-                                    newList[currentIdx] = newList[currentIdx + 1]
-                                    newList[currentIdx + 1] = tmp
-                                    onReorder(newList)
-                                    draggedIndex = currentIdx + 1
-                                    dragOffsetY = 0f
-                                }
-                                dragOffsetY < -halfCard && currentIdx > 0 -> {
-                                    val newList = orderedWidgets.toMutableList()
-                                    val tmp = newList[currentIdx]
-                                    newList[currentIdx] = newList[currentIdx - 1]
-                                    newList[currentIdx - 1] = tmp
-                                    onReorder(newList)
-                                    draggedIndex = currentIdx - 1
-                                    dragOffsetY = 0f
-                                }
-                            }
-                        }
-                    )
-                },
+                .offset(y = if (isDragged) dragOffsetY.dp else 0.dp),
             colors = CardDefaults.cardColors(containerColor = LuxCardGray.copy(alpha = 0.4f)),
             border = BorderStroke(
                 1.dp,
@@ -1284,14 +1304,55 @@ private fun DashboardStep(
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Drag handle
+                // Drag handle — drag gesture only starts from here
                 Icon(
                     Icons.Default.DragHandle,
                     contentDescription = "Drag to reorder",
-                    tint = LuxMuted.copy(alpha = 0.6f),
+                    tint = LuxGoldChange.copy(alpha = 0.8f),
                     modifier = Modifier
-                        .size(20.dp)
-                        .padding(end = 4.dp)
+                        .size(28.dp)
+                        .pointerInput(index) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    draggedIndex = index
+                                    dragOffsetY = 0f
+                                },
+                                onDragEnd = {
+                                    draggedIndex = null
+                                    dragOffsetY = 0f
+                                },
+                                onDragCancel = {
+                                    draggedIndex = null
+                                    dragOffsetY = 0f
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragOffsetY += dragAmount.y / 3f
+                                    val halfCard = cardHeightPx / 2f
+                                    val currentIdx = draggedIndex ?: return@detectDragGestures
+                                    when {
+                                        dragOffsetY > halfCard && currentIdx < orderedWidgets.size - 1 -> {
+                                            val newList = orderedWidgets.toMutableList()
+                                            val tmp = newList[currentIdx]
+                                            newList[currentIdx] = newList[currentIdx + 1]
+                                            newList[currentIdx + 1] = tmp
+                                            onReorder(newList)
+                                            draggedIndex = currentIdx + 1
+                                            dragOffsetY = 0f
+                                        }
+                                        dragOffsetY < -halfCard && currentIdx > 0 -> {
+                                            val newList = orderedWidgets.toMutableList()
+                                            val tmp = newList[currentIdx]
+                                            newList[currentIdx] = newList[currentIdx - 1]
+                                            newList[currentIdx - 1] = tmp
+                                            onReorder(newList)
+                                            draggedIndex = currentIdx - 1
+                                            dragOffsetY = 0f
+                                        }
+                                    }
+                                }
+                            )
+                        }
                 )
                 Spacer(Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
@@ -1356,8 +1417,8 @@ private fun ReviewStep(
         title = "Confirm and initialize",
         subtitle = "Tap any row to edit."
     )
-    ReviewRow(label = "Primary objective", value = objective, onEdit = { onEdit(STEP_OBJECTIVE_MODE) })
-    ReviewRow(label = "Budget mode", value = mode.replace(" Mode", ""), onEdit = { onEdit(STEP_OBJECTIVE_MODE) })
+    ReviewRow(label = "Primary objective", value = objective, onEdit = { onEdit(STEP_OBJECTIVE) })
+    ReviewRow(label = "Budget mode", value = mode.replace(" Mode", ""), onEdit = { onEdit(STEP_BUDGET_MODE) })
     ReviewRow(label = "Currency", value = currency, onEdit = { onEdit(STEP_INCOME) })
     ReviewRow(label = "Monthly salary", value = "$currency$salary", onEdit = { onEdit(STEP_INCOME) })
 
@@ -1568,9 +1629,7 @@ private fun BottomBar(
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = LuxGoldChange),
                 modifier = Modifier.weight(1f)
             ) {
-                Icon(Icons.Default.ArrowBack, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Back", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", modifier = Modifier.size(20.dp))
             }
         }
         Button(
