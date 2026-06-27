@@ -2,7 +2,73 @@
 
 All notable changes to this project are documented here.
 
-## [Unreleased] — 2026-06-26 (b)
+## [Unreleased] — 2026-06-27
+
+### Added — Onboarding v4 (multi-step expansion: 6 → 8 steps)
+- **`data class AccountEntry`** and **`data class RecurringEntry`** added to `OnboardingFlow.kt` at file scope for type-safe onboarding data transfer.
+- **Step 3 — Income rails (enhanced payday)**:
+  - Three payday-type chips: "Specific Day" (existing number field), "Last Working Day", "Last Day of Month".
+  - Working days selector when payday involves business days: "Mon – Fri" / "Mon – Sat" / "Custom" (7-checkbox day picker).
+  - `paydayValid` is always `true` for non-specific types; sentinel `0` passed to `resolvedPayday()` for last-working/last-day.
+- **Step 5 — Your bank accounts (new)**:
+  - Inline account builder: name field, type chip row (Savings/Current/Wallet/Credit Card/Investment), balance field, primary radio toggle.
+  - First account defaults to primary; deleting primary auto-promotes first remaining.
+  - Empty state prompt with skip InfoTip. "Add Account" OutlinedButton appends new entry.
+  - Step is optional (CTA "Continue" even when empty — default account created by ViewModel).
+- **Step 6 — Recurring commitments (new, skippable)**:
+  - Inline recurring item builder: name, amount, due day (1–31), category chips (EMI/Rent/Utilities/Subscription/Insurance/Other).
+  - `isSubscription` auto-set when category = "Subscription".
+  - BottomBar CTA shows "Skip" when list is empty, "Continue" otherwise.
+  - Items committed as `BillSubscription` records via `viewModel.addBill(...)`.
+- **Step 7 — Dashboard (drag-to-reorder)**:
+  - `orderedWidgets: List<WidgetId>` state saved as CSV via `rememberSaveable`.
+  - `DragHandle` icon on each card; `pointerInput(detectDragGestures)` swaps adjacent items when drag exceeds half card height; `zIndex(1f)` + full gold border on dragged card.
+  - `Spacer(8.dp)` between each widget card.
+  - Subtitle: "Drag to reorder · toggle on or off".
+- **Step 8 — Review (updated)**:
+  - Human-readable payday: "Last working day (Mon–Fri)", "Day 15", "Last day of month".
+  - New review rows: "Bank accounts" (count + primary name), "Recurring items" (count).
+- **`FinanceViewModel.onboardUser`** — new `skipDefaultAccount: Boolean = false` parameter; when `true`, skips inserting the default "Primary Bank Account" (used when user provided explicit accounts in onboarding).
+- **`AurenApp.kt` callsite** — `onComplete` now destructures 10 params and calls `addAccount` + `addBill` for each entry after `onboardUser`.
+
+### Fixed — Dark mode card backgrounds
+- `CinematicGlassCard` and `InteractiveGeometricCard` dark-mode backgrounds changed from `Color(0x2B21173C)` / `Color(0x1B0B0813)` (~11–17% opacity, invisible) to `Color(0xFF1E1530)` / `Color(0xFF16102A)` (fully opaque deep purple). Cards now have visible surface depth instead of disappearing into the page background.
+- Light mode fix from prior session retained: solid `Color.White` with `#EBE6F4` border.
+
+### Added — Shake to Add transaction
+- **`data/Entities.kt`** — `shakeToAddEnabled: Boolean = false` added to `UserProfile`.
+- **`data/AppDatabase.kt`** — DB version bumped to **4** + `MIGRATION_3_4` ALTERs `user_profile` to add `shakeToAddEnabled INTEGER NOT NULL DEFAULT 0`. Non-destructive.
+- **`ui/FinanceViewModel.kt`** — `setShakeToAdd(enabled: Boolean)` persists preference.
+- **`ui/AurenApp.kt`** — `DisposableEffect` registers `SensorManager` accelerometer listener when `shakeToAddEnabled = true`. Threshold: 25 m/s² (~2.5g), cooldown: 1200ms. On shake opens `ShakeQuickAddDialog`.
+- **`ShakeQuickAddDialog`** — compact bottom-sheet-style dialog: amount field, type selector (Expense / Income / Savings), merchant field, category chips (scrollable), account selector. Logs transaction directly via `viewModel.addTransaction`.
+- **`ui/SettingsSidebar.kt`** — new `SHAKE` route, `ShakeToAddEditor` composable with Switch toggle (default off), active-state status chip. Listed under Preferences section.
+
+### Changed — Predictive Savings Audit widget redesign
+- **`PredictiveEomSavingsWidget`** completely rewritten:
+  - **Arc gauge** — 240° sweeping arc (Canvas `drawArc`) with animated fill (`tween(1200, EaseOutCubic)`), glowing tip dot at the arc end.
+  - **Health colour** drives arc fill, rank badge, and detail card border (green / gold / orange / red).
+  - **Tap to expand** — clicking the card toggles `showDetail`; a detail panel slides in below via `AnimatedVisibility` with spring physics. No separate Dialog.
+  - Detail panel shows: Income, MTD spend, projected remaining spend, unpaid bills, estimated EOM savings, day-of-month progress bar, and high-burn warning if velocity exceeds 90% of daily income target.
+  - Chevron indicator (▼/▲) at card bottom signals expandability.
+
+### Fixed — Markdown in AI responses
+- **`FormattedCoachResponse`** rewritten to parse `# H1`, `## H2`, `### H3`, `**bold**`, `* / - / •` bullets into styled Compose text. `parseInlineMarkdown()` handles inline bold spans.
+- **Insights card** (`InsightsScreen`) now uses `FormattedCoachResponse` instead of raw `Text`.
+
+### Fixed — Chart hardcoded data
+- `YoYSavingsRateChart`, `YoYMonthlySavingsRateChart` — replaced all hardcoded historical data arrays with per-month computations from real transactions. Empty states shown when no data.
+- "System Consistency Map" bar chart — replaced static `matchTemplateHeights` with real last-7-days daily expense data. Today's bar highlighted.
+
+### Fixed — Auth screen redesign
+- `FirebaseAuthenticationScreen` redesigned to match design spec: hero section with animated shield (pulse + radial glow + rotating dashed orbit ring), language pill switcher, icon-prefixed text fields with password visibility toggle, "Sign in securely" CTA with shield icon, OR-divider, Google/Guest outlined buttons, Firebase status badge.
+
+### Fixed — Card backgrounds (light mode)
+- `CinematicGlassCard` and `InteractiveGeometricCard` light-mode backgrounds changed from `Color(0xA5F3ECFC)` (65% lavender tint) to solid `Color.White`. Borders simplified to `#EBE6F4` outline. Eliminates "boxy painted" appearance on Monetary Matrix and other home widgets.
+
+### Fixed — Bottom nav auto-hide
+- Nav bar stays visible on Home tab always. On other tabs it auto-hides after 3 seconds. Any touch anywhere on screen reveals it and resets the timer. Slide-down uses `EaseInCubic` (300ms); slide-up uses medium-bouncy spring.
+
+
 
 ### Added — Multi-step onboarding (v3)
 - **`ui/OnboardingFlow.kt`** — six-step wizard replacing the single-page onboarding:

@@ -139,11 +139,10 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         payday: Int,
         currentBalance: Double,
         buffer: Double,
-        hiddenWidgets: String = ""
+        hiddenWidgets: String = "",
+        skipDefaultAccount: Boolean = false
     ) {
         viewModelScope.launch {
-            // ONE transactional write — see arch critique #2 (race vs follow-up update).
-            // The Review step commits everything in a single suspending block.
             val existing = repository.getProfileDirect()
             val merged = (existing ?: UserProfile()).copy(
                 currency = currency,
@@ -153,20 +152,20 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 salaryDate = payday.coerceIn(1, 31),
                 safetyBuffer = buffer,
                 isOnboarded = true,
-                onboardingStep = -1,  // completed sentinel
+                onboardingStep = -1,
                 hiddenWidgets = hiddenWidgets
             )
             repository.saveProfile(merged)
 
-            // Insert matching opening bank account (only on first onboarding, never on re-onboard).
-            if (existing == null || !existing.isOnboarded) {
-                val defaultAcc = Account(
-                    name = "Primary Bank Account",
-                    type = "Savings",
-                    balance = currentBalance,
-                    institution = "Main Institution"
+            if (!skipDefaultAccount && (existing == null || !existing.isOnboarded)) {
+                repository.insertAccount(
+                    Account(
+                        name = "Primary Bank Account",
+                        type = "Savings",
+                        balance = currentBalance,
+                        institution = "Main Institution"
+                    )
                 )
-                repository.insertAccount(defaultAcc)
             }
         }
     }
@@ -468,6 +467,13 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     autoSaveGoalId = goalId
                 )
             )
+        }
+    }
+
+    fun setShakeToAdd(enabled: Boolean) {
+        viewModelScope.launch {
+            val current = repository.getProfileDirect() ?: UserProfile()
+            repository.saveProfile(current.copy(shakeToAddEnabled = enabled))
         }
     }
 

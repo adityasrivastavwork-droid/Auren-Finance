@@ -84,7 +84,7 @@ import com.example.ui.theme.langOption
  * (readability) — one decision per screen, generous spacing, no competing anchors.
  */
 
-private enum class SettingsRoute { LIST, IDENTITY, INCOME, BUFFER, CURRENCY, MODE, OBJECTIVE, LANGUAGE, THEME, WIDGETS, RESET, LOGOUT }
+private enum class SettingsRoute { LIST, IDENTITY, INCOME, BUFFER, CURRENCY, MODE, OBJECTIVE, LANGUAGE, THEME, WIDGETS, SHAKE, RESET, LOGOUT }
 
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
@@ -274,6 +274,7 @@ fun SettingsSidebar(
                         )
                         SettingsRoute.THEME -> ThemeEditor()
                         SettingsRoute.WIDGETS -> WidgetsEditor(viewModel = viewModel)
+                        SettingsRoute.SHAKE -> ShakeToAddEditor(viewModel = viewModel, profile = profile)
                         SettingsRoute.RESET -> ResetSetupConfirm(
                             onCancel = { route = SettingsRoute.LIST },
                             onConfirm = {
@@ -358,6 +359,7 @@ private fun titleFor(r: SettingsRoute): String = when (r) {
     SettingsRoute.LANGUAGE -> "Language"
     SettingsRoute.THEME -> "Appearance"
     SettingsRoute.WIDGETS -> "Dashboard widgets"
+    SettingsRoute.SHAKE -> "Shake to add"
     SettingsRoute.RESET -> "Reset setup"
     SettingsRoute.LOGOUT -> "Sign out"
 }
@@ -482,6 +484,12 @@ private fun SettingsListScreen(
         label = "Dashboard widgets",
         value = "Customize",
         onClick = { onRoute(SettingsRoute.WIDGETS) }
+    )
+    SidebarRow(
+        icon = Icons.Default.PhoneAndroid,
+        label = "Shake to add transaction",
+        value = "Quick log",
+        onClick = { onRoute(SettingsRoute.SHAKE) }
     )
 
     // Section: Security
@@ -839,6 +847,64 @@ private fun WidgetsEditor(viewModel: FinanceViewModel) {
 
 private fun WidgetId_visibleCount(cfg: com.example.data.DashboardConfig): Int =
     com.example.data.WidgetId.values().count { cfg.isVisible(it) }
+
+@Composable
+private fun ShakeToAddEditor(viewModel: FinanceViewModel, profile: com.example.data.UserProfile?) {
+    val enabled = profile?.shakeToAddEnabled ?: false
+    InfoTip(text = "Shake your phone to instantly open the Quick Add transaction dialog. Requires motion sensor. Default: off.")
+    Spacer(Modifier.height(12.dp))
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = LuxCardGray.copy(alpha = 0.4f)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (enabled) LuxGoldChange.copy(alpha = 0.5f) else LuxCardGray),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.size(40.dp)
+                    .background(LuxGoldChange.copy(alpha = 0.12f), androidx.compose.foundation.shape.RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(20.dp))
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Shake to add", color = LuxIvory, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(
+                    text = if (enabled) "Shake detected → Quick Add opens instantly" else "Disabled — tap to enable",
+                    color = LuxMuted, fontSize = 11.sp
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = { viewModel.setShakeToAdd(it) },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = LuxGoldChange,
+                    checkedTrackColor = LuxGoldLight,
+                    uncheckedThumbColor = LuxMuted,
+                    uncheckedTrackColor = LuxCardGray
+                ),
+                modifier = Modifier.scale(0.9f)
+            )
+        }
+    }
+    if (enabled) {
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .background(LuxGoldChange.copy(alpha = 0.08f), androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.CheckCircle, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Active — shake threshold: ~2.5g, cooldown: 1.2 seconds", color = LuxGoldChange, fontSize = 11.sp)
+        }
+    }
+}
 
 @Composable
 private fun ResetSetupConfirm(onCancel: () -> Unit, onConfirm: () -> Unit) {

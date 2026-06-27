@@ -68,6 +68,43 @@ fun AurenApp(viewModel: FinanceViewModel) {
     val totalDebtOutstanding by viewModel.totalDebtOutstanding.collectAsStateWithLifecycle()
     val upcomingBillsTotal by viewModel.upcomingBillsTotal.collectAsStateWithLifecycle()
     val daysRemainingInCycle by viewModel.daysRemainingInCycle.collectAsStateWithLifecycle()
+
+    // Shake-to-add: register accelerometer when enabled
+    val shakeToAddEnabled = profile?.shakeToAddEnabled ?: false
+    var showShakeQuickAdd by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    DisposableEffect(shakeToAddEnabled) {
+        if (!shakeToAddEnabled) return@DisposableEffect onDispose {}
+        val sensorManager = context.getSystemService(android.content.Context.SENSOR_SERVICE) as android.hardware.SensorManager
+        val accelerometer = sensorManager.getDefaultSensor(android.hardware.Sensor.TYPE_ACCELEROMETER)
+        var lastShakeTime = 0L
+        val listener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(event: android.hardware.SensorEvent) {
+                val x = event.values[0]; val y = event.values[1]; val z = event.values[2]
+                val magnitude = kotlin.math.sqrt((x * x + y * y + z * z).toDouble())
+                val now = System.currentTimeMillis()
+                if (magnitude > 25.0 && now - lastShakeTime > 1200) {
+                    lastShakeTime = now
+                    showShakeQuickAdd = true
+                }
+            }
+            override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+        }
+        sensorManager.registerListener(listener, accelerometer, android.hardware.SensorManager.SENSOR_DELAY_UI)
+        onDispose { sensorManager.unregisterListener(listener) }
+    }
+
+    if (showShakeQuickAdd) {
+        ShakeQuickAddDialog(
+            accounts = accounts,
+            currency = profile?.currency ?: "₹",
+            onDismiss = { showShakeQuickAdd = false },
+            onAdd = { amount, type, accountId, category, merchant ->
+                viewModel.addTransaction(amount, type, accountId, category, merchant)
+                showShakeQuickAdd = false
+            }
+        )
+    }
     val safeToSpendToday by viewModel.safeToSpendToday.collectAsStateWithLifecycle()
 
     var activeTab by remember { mutableStateOf("home") } // "home", "transactions", "plan", "insights", "coach"
@@ -80,10 +117,35 @@ fun AurenApp(viewModel: FinanceViewModel) {
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showSideBar by remember { mutableStateOf(false) }
 
+    // Auto-hide nav bar on non-home screens; re-show on touch/scroll
+    var navBarVisible by remember { mutableStateOf(true) }
+    val navBarScope = rememberCoroutineScope()
+    var navBarHideJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    fun revealNavBar() {
+        navBarVisible = true
+        navBarHideJob?.cancel()
+        if (activeTab != "home") {
+            navBarHideJob = navBarScope.launch {
+                delay(3000)
+                navBarVisible = false
+            }
+        }
+    }
+
+    // When tab changes to home always show; to other tabs start hide timer
+    LaunchedEffect(activeTab) {
+        if (activeTab == "home") {
+            navBarHideJob?.cancel()
+            navBarVisible = true
+        } else {
+            revealNavBar()
+        }
+    }
+
     val currency = profile?.currency ?: "₹"
     val mode = profile?.appMode ?: "Strict Mode"
 
-    val context = androidx.compose.ui.platform.LocalContext.current
     val prefs = remember(context) { context.getSharedPreferences("firebase_auth_prefs", android.content.Context.MODE_PRIVATE) }
     var isFirebaseAuthed by remember { mutableStateOf(prefs.getBoolean("is_authed", false)) }
     var firebaseUserEmail by remember { mutableStateOf(prefs.getString("authed_email", "") ?: "") }
@@ -120,8 +182,19 @@ fun AurenApp(viewModel: FinanceViewModel) {
         OnboardingFlow(
             profile = profile,
             viewModel = viewModel,
-            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden ->
-                viewModel.onboardUser(cur, obj, md, sal, pay, bal, buf, hidden)
+            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems ->
+                viewModel.onboardUser(
+                    currency = cur, objective = obj, mode = md, salary = sal,
+                    payday = pay, currentBalance = bal, buffer = buf,
+                    hiddenWidgets = hidden,
+                    skipDefaultAccount = accounts.isNotEmpty()
+                )
+                accounts.forEach { acc ->
+                    viewModel.addAccount(acc.name, acc.type, acc.balance, acc.creditLimit, if (acc.isPrimary) "Primary" else "")
+                }
+                recurringItems.forEach { item ->
+                    viewModel.addBill(item.name, item.amount, item.dueDay, item.category, item.isSubscription)
+                }
             }
         )
     } else {
@@ -153,6 +226,15 @@ fun AurenApp(viewModel: FinanceViewModel) {
                 modifier = Modifier
                     .fillMaxSize()
                     .background(cinematicBackground)
+                    .pointerInput(Unit) {
+                        // Any touch anywhere re-reveals the nav bar
+                        awaitPointerEventScope {
+                            while (true) {
+                                awaitPointerEvent()
+                                revealNavBar()
+                            }
+                        }
+                    }
             ) {
                 Box(
                     modifier = Modifier
@@ -241,9 +323,15 @@ fun AurenApp(viewModel: FinanceViewModel) {
 
                 // Floating Bottom Navigation Footer with slide away physics
                 AnimatedVisibility(
-                    visible = !showSideBar,
-                    enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                    exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                    visible = !showSideBar && navBarVisible,
+                    enter = slideInVertically(
+                        initialOffsetY = { it },
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)
+                    ) + fadeIn(animationSpec = tween(200)),
+                    exit = slideOutVertically(
+                        targetOffsetY = { it },
+                        animationSpec = tween(300, easing = androidx.compose.animation.core.EaseInCubic)
+                    ) + fadeOut(animationSpec = tween(200)),
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .zIndex(50f)
@@ -542,38 +630,60 @@ fun YoYSavingsRateChart(
     val cal = remember { Calendar.getInstance() }
     val currentYear = cal.get(Calendar.YEAR)
     val currentMonth = cal.get(Calendar.MONTH)
+    val priorYear = currentYear - 1
 
-    // Compute actual current month (June) savings rate from transactions state if any
-    val txCal = remember { Calendar.getInstance() }
-    val juneExpenses = remember(transactions, currentYear, currentMonth) {
-        transactions.filter {
-            txCal.timeInMillis = it.date
-            txCal.get(Calendar.YEAR) == currentYear &&
-            txCal.get(Calendar.MONTH) == currentMonth &&
-            it.type.lowercase() == "expense"
-        }.sumOf { it.amount }
-    }
-    val juneIncome = remember(transactions, currentYear, currentMonth) {
-        transactions.filter {
-            txCal.timeInMillis = it.date
-            txCal.get(Calendar.YEAR) == currentYear &&
-            txCal.get(Calendar.MONTH) == currentMonth &&
-            it.type.lowercase() == "income"
-        }.sumOf { it.amount }
-    }
+    // Compute real savings rate per month for currentYear and priorYear.
+    // Rate = ((income - expenses) / income) * 100, or null if no income recorded.
+    val monthsBack = 6
+    data class MonthKey(val year: Int, val month: Int)
 
-    // Savings rate calculation
-    val juneRate = remember(juneExpenses, juneIncome) {
-        if (juneIncome > 0.0) {
-            ((juneIncome - juneExpenses) / juneIncome) * 100.0
-        } else {
-            25.0 // elegant baseline fallback if no transactions are recorded yet
+    val ratesByMonth = remember(transactions) {
+        val txCal = Calendar.getInstance()
+        val result = mutableMapOf<MonthKey, Double>()
+        for (offset in (monthsBack - 1) downTo 0) {
+            val target = Calendar.getInstance().apply { add(Calendar.MONTH, -offset) }
+            val yr = target.get(Calendar.YEAR)
+            val mo = target.get(Calendar.MONTH)
+            val income = transactions.filter {
+                txCal.timeInMillis = it.date
+                txCal.get(Calendar.YEAR) == yr && txCal.get(Calendar.MONTH) == mo &&
+                it.type.equals("income", ignoreCase = true)
+            }.sumOf { it.amount }
+            val expenses = transactions.filter {
+                txCal.timeInMillis = it.date
+                txCal.get(Calendar.YEAR) == yr && txCal.get(Calendar.MONTH) == mo &&
+                it.type.equals("expense", ignoreCase = true)
+            }.sumOf { it.amount }
+            result[MonthKey(yr, mo)] = if (income > 0.0) ((income - expenses) / income * 100.0).coerceIn(0.0, 100.0) else 0.0
         }
-    }.coerceIn(0.0, 100.0)
+        result
+    }
 
-    val currentYearTrend = listOf(18.0, 22.5, 15.0, 26.0, 31.0, juneRate)
-    val priorYearTrend = listOf(12.0, 15.1, 19.0, 20.0, 24.5, 18.0)
-    val monthsLabels = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun")
+    // Build month labels and data arrays for last 6 months
+    val monthsLabels = remember {
+        List(monthsBack) { offset ->
+            Calendar.getInstance().apply { add(Calendar.MONTH, -(monthsBack - 1 - offset)) }
+                .getDisplayName(Calendar.MONTH, Calendar.SHORT, Locale.getDefault()) ?: ""
+        }
+    }
+    val currentYearTrend = remember(ratesByMonth) {
+        List(monthsBack) { offset ->
+            val target = Calendar.getInstance().apply { add(Calendar.MONTH, -(monthsBack - 1 - offset)) }
+            ratesByMonth[MonthKey(target.get(Calendar.YEAR), target.get(Calendar.MONTH))] ?: 0.0
+        }
+    }
+    // Prior year: same months but one year back
+    val priorYearTrend = remember(ratesByMonth) {
+        List(monthsBack) { offset ->
+            val target = Calendar.getInstance().apply { add(Calendar.MONTH, -(monthsBack - 1 - offset)); add(Calendar.YEAR, -1) }
+            ratesByMonth[MonthKey(target.get(Calendar.YEAR), target.get(Calendar.MONTH))] ?: 0.0
+        }
+    }
+
+    val hasAnyData = remember(currentYearTrend, priorYearTrend) {
+        currentYearTrend.any { it > 0.0 } || priorYearTrend.any { it > 0.0 }
+    }
+    val juneRate = currentYearTrend.lastOrNull() ?: 0.0
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -600,28 +710,44 @@ fun YoYSavingsRateChart(
                         color = LuxMuted
                     )
                 }
-                
-                // Indicators / Legends
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(LuxGoldChange, RoundedCornerShape(2.dp))
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(text = "This Cycle", color = LuxIvory, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(LuxIvory.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(text = "Prior Cycle", color = LuxMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+
+                if (hasAnyData) {
+                    // Indicators / Legends
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(LuxGoldChange, RoundedCornerShape(2.dp))
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = "This Cycle", color = LuxIvory, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(LuxIvory.copy(alpha = 0.4f), RoundedCornerShape(2.dp))
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = "Prior Cycle", color = LuxMuted, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
+            }
+
+            if (!hasAnyData) {
+                Spacer(modifier = Modifier.height(24.dp))
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(imageVector = Icons.Outlined.ShowChart, contentDescription = null, tint = LuxMuted, modifier = Modifier.size(32.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(text = "No transaction data yet", color = LuxMuted, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text(text = "Record income & expenses to see savings rate trends", color = LuxMuted.copy(alpha = 0.6f), fontSize = 11.sp, textAlign = TextAlign.Center)
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                return@Column
             }
 
             Spacer(modifier = Modifier.height(18.dp))
@@ -762,9 +888,15 @@ fun YoYSavingsRateChart(
             }
             
             Spacer(modifier = Modifier.height(10.dp))
-            val percentGain = juneRate - 18.0
+            val priorCurrentRate = priorYearTrend.lastOrNull() ?: 0.0
+            val percentGain = juneRate - priorCurrentRate
             Text(
-                text = if (percentGain > 0) "▲ Active June savings rate beats prior cycle baseline by ${String.format("%.1f", percentGain)}% points." else "● Active savings cycles are closely aligned with benchmark target corridors.",
+                text = if (priorCurrentRate > 0.0 && percentGain > 0)
+                    "▲ Current savings rate beats prior cycle by ${String.format("%.1f", percentGain)}% points."
+                else if (priorCurrentRate > 0.0 && percentGain < 0)
+                    "▼ Current savings rate is ${String.format("%.1f", -percentGain)}% points below prior cycle."
+                else
+                    "● Record more transactions to see year-over-year trend comparison.",
                 color = if (percentGain > 0) LuxGreen else LuxGreen.copy(alpha = 0.7f),
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Medium
@@ -1907,15 +2039,15 @@ fun CinematicGlassCard(
     val glassBg = if (isDarkThemeGlobal) {
         Brush.verticalGradient(
             colors = listOf(
-                Color(0x2B21173C),
-                Color(0x1B0B0813)
+                Color(0xFF1E1530),
+                Color(0xFF16102A)
             )
         )
     } else {
         Brush.verticalGradient(
             colors = listOf(
-                Color(0xD8FFFFFF),
-                Color(0xA5F3ECFC)
+                Color.White,
+                Color.White
             )
         )
     }
@@ -1923,17 +2055,16 @@ fun CinematicGlassCard(
     val glassBorderBrush = if (isDarkThemeGlobal) {
         Brush.linearGradient(
             colors = listOf(
-                LuxGoldChange.copy(alpha = 0.40f),
-                Color.White.copy(alpha = 0.08f),
-                LuxGoldChange.copy(alpha = 0.20f)
+                LuxGoldChange.copy(alpha = 0.30f),
+                Color.White.copy(alpha = 0.06f),
+                LuxGoldChange.copy(alpha = 0.15f)
             )
         )
     } else {
         Brush.linearGradient(
             colors = listOf(
-                Color.White.copy(alpha = 0.9f),
-                LuxGoldChange.copy(alpha = 0.25f),
-                Color.White.copy(alpha = 0.4f)
+                Color(0xFFEBE6F4),
+                Color(0xFFEBE6F4)
             )
         )
     }
@@ -1943,6 +2074,7 @@ fun CinematicGlassCard(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
+                if (!isDarkThemeGlobal) shadowElevation = 4.dp.toPx()
             }
             .then(
                 if (onClick != null) {
@@ -1957,7 +2089,7 @@ fun CinematicGlassCard(
             ),
         shape = shape,
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        border = BorderStroke(1.2.dp, glassBorderBrush)
+        border = BorderStroke(1.dp, glassBorderBrush)
     ) {
         Column(
             modifier = Modifier
@@ -5094,11 +5226,9 @@ fun InsightsScreen(
                     Text(text = "AI Auditor is running regression algorithms over your transaction ledger...", color = LuxMuted, fontSize = 13.sp)
                 } else {
                     val displayInsights = aiInsights ?: "No insights computed yet. Maintain some transaction entries to generate intelligent suggestions."
-                    Text(
+                    FormattedCoachResponse(
                         text = displayInsights,
-                        color = LuxIvory,
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp
+                        modifier = Modifier.padding(0.dp)
                     )
                 }
             }
@@ -5169,28 +5299,103 @@ fun InsightsScreen(
 }
 
 @Composable
-fun FormattedCoachResponse(text: String) {
-    val annotatedString = remember(text) {
-        androidx.compose.ui.text.buildAnnotatedString {
-            val parts = text.split("**")
-            parts.forEachIndexed { index, part ->
-                if (index % 2 == 1) { // Bold text
-                    withStyle(style = androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold, color = LuxGoldChange)) {
-                        append(part)
+fun FormattedCoachResponse(
+    text: String,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        val lines = text.split("\n")
+        lines.forEach { rawLine ->
+            val line = rawLine.trimEnd()
+            when {
+                // H1: # Title
+                line.startsWith("# ") -> {
+                    Text(
+                        text = line.removePrefix("# ").trim(),
+                        color = LuxGoldChange,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 22.sp
+                    )
+                }
+                // H2: ## Title
+                line.startsWith("## ") -> {
+                    Text(
+                        text = line.removePrefix("## ").trim(),
+                        color = LuxGoldChange,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 20.sp
+                    )
+                }
+                // H3: ### Title
+                line.startsWith("### ") -> {
+                    Text(
+                        text = line.removePrefix("### ").trim(),
+                        color = LuxIvory,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        lineHeight = 20.sp
+                    )
+                }
+                // Bullet: *, -, or • at start
+                line.matches(Regex("^[\\*\\-•]\\s+.*")) -> {
+                    val content = line.replaceFirst(Regex("^[\\*\\-•]\\s+"), "")
+                    Row(verticalAlignment = Alignment.Top) {
+                        Text(
+                            text = "•",
+                            color = LuxGoldChange,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(end = 6.dp, top = 1.dp)
+                        )
+                        Text(
+                            text = parseInlineMarkdown(content),
+                            color = LuxIvory,
+                            fontSize = 13.sp,
+                            lineHeight = 19.sp
+                        )
                     }
-                } else { // Normal text
-                    append(part)
+                }
+                // Blank line — small gap already handled by spacedBy
+                line.isBlank() -> {
+                    Spacer(modifier = Modifier.height(2.dp))
+                }
+                // Normal paragraph
+                else -> {
+                    Text(
+                        text = parseInlineMarkdown(line),
+                        color = LuxIvory,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
                 }
             }
         }
     }
-    Text(
-        text = annotatedString,
-        color = LuxIvory,
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-        modifier = Modifier.padding(12.dp)
-    )
+}
+
+/** Parses **bold** and *italic* inline markers into AnnotatedString. */
+private fun parseInlineMarkdown(text: String): androidx.compose.ui.text.AnnotatedString {
+    return androidx.compose.ui.text.buildAnnotatedString {
+        var remaining = text
+        while (remaining.isNotEmpty()) {
+            val boldStart = remaining.indexOf("**")
+            val italicStart = remaining.indexOf("*").takeIf { it != -1 && (boldStart == -1 || it < boldStart || remaining.indexOf("**") != it) }
+            when {
+                boldStart != -1 && (italicStart == null || boldStart <= italicStart) -> {
+                    val boldEnd = remaining.indexOf("**", boldStart + 2)
+                    if (boldEnd == -1) { append(remaining); break }
+                    append(remaining.substring(0, boldStart))
+                    withStyle(androidx.compose.ui.text.SpanStyle(fontWeight = FontWeight.Bold, color = LuxGoldChange)) {
+                        append(remaining.substring(boldStart + 2, boldEnd))
+                    }
+                    remaining = remaining.substring(boldEnd + 2)
+                }
+                else -> { append(remaining); break }
+            }
+        }
+    }
 }
 
 // ---------------- COACH TAB SCREEN ----------------
@@ -5321,6 +5526,173 @@ fun CoachScreen(viewModel: FinanceViewModel, currency: String) {
 }
 
 // ---------------- DIALOG COMPONENTS ----------------
+
+// ── SHAKE QUICK-ADD DIALOG ────────────────────────────────────────────────
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ShakeQuickAddDialog(
+    accounts: List<Account>,
+    currency: String,
+    onDismiss: () -> Unit,
+    onAdd: (Double, String, Long, String, String) -> Unit
+) {
+    var amount by remember { mutableStateOf("") }
+    var selectedType by remember { mutableStateOf("Expense") }
+    var merchant by remember { mutableStateOf("") }
+    var selectedCategory by remember { mutableStateOf("Shopping") }
+    var selectedAccountId by remember { mutableStateOf(accounts.firstOrNull()?.id ?: 0L) }
+
+    val types = listOf("Expense", "Income", "Savings")
+    val categories = listOf("Shopping", "Dining", "Groceries", "Transport", "Utilities", "Health", "Entertainment", "Other")
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
+            border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.35f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(24.dp)) {
+                // Header
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier.size(40.dp)
+                            .background(LuxGoldChange.copy(alpha = 0.15f), RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("📳", fontSize = 18.sp)
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text("Quick Add", color = LuxIvory, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("Shake detected — log it fast", color = LuxMuted, fontSize = 11.sp)
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = null, tint = LuxMuted, modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Amount
+                OutlinedTextField(
+                    value = amount,
+                    onValueChange = { amount = it.filter { c -> c.isDigit() || c == '.' } },
+                    placeholder = { Text("$currency Amount", color = LuxMuted) },
+                    leadingIcon = { Text(currency, color = LuxGoldChange, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 4.dp)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LuxGoldChange, unfocusedBorderColor = LuxCardGray,
+                        focusedTextColor = LuxIvory, unfocusedTextColor = LuxIvory
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Type selector
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    types.forEach { type ->
+                        val sel = type == selectedType
+                        Box(
+                            modifier = Modifier.weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (sel) LuxGoldChange else LuxCardGray)
+                                .clickable { selectedType = type }
+                                .padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(type, color = if (sel) Color.White else LuxMuted, fontSize = 11.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Merchant
+                OutlinedTextField(
+                    value = merchant,
+                    onValueChange = { merchant = it },
+                    placeholder = { Text("Merchant / Note", color = LuxMuted) },
+                    leadingIcon = { Icon(Icons.Default.Store, contentDescription = null, tint = LuxGoldChange.copy(alpha = 0.7f), modifier = Modifier.size(18.dp)) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LuxGoldChange, unfocusedBorderColor = LuxCardGray,
+                        focusedTextColor = LuxIvory, unfocusedTextColor = LuxIvory
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Category row (scrollable chips)
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    categories.forEach { cat ->
+                        val sel = cat == selectedCategory
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50.dp))
+                                .background(if (sel) LuxGoldChange.copy(alpha = 0.2f) else LuxCardGray)
+                                .border(1.dp, if (sel) LuxGoldChange else LuxCardGray, RoundedCornerShape(50.dp))
+                                .clickable { selectedCategory = cat }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text(cat, color = if (sel) LuxGoldChange else LuxMuted, fontSize = 11.sp, fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal)
+                        }
+                    }
+                }
+
+                // Account selector (if multiple accounts)
+                if (accounts.size > 1) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        accounts.forEach { acc ->
+                            val sel = acc.id == selectedAccountId
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (sel) LuxGoldChange.copy(alpha = 0.18f) else LuxCardGray)
+                                    .border(1.dp, if (sel) LuxGoldChange else LuxCardGray, RoundedCornerShape(8.dp))
+                                    .clickable { selectedAccountId = acc.id }
+                                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                            ) {
+                                Text(acc.name, color = if (sel) LuxGoldChange else LuxMuted, fontSize = 11.sp, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Submit
+                Button(
+                    onClick = {
+                        val amt = amount.toDoubleOrNull() ?: return@Button
+                        if (amt <= 0.0) return@Button
+                        onAdd(amt, selectedType, selectedAccountId, selectedCategory, merchant.ifBlank { selectedCategory })
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().height(48.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Log Transaction", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -5666,15 +6038,15 @@ fun InteractiveGeometricCard(
     val glassBg = if (isDarkThemeGlobal) {
         Brush.verticalGradient(
             colors = listOf(
-                Color(0x2B21173C),
-                Color(0x1B0B0813)
+                Color(0xFF1E1530),
+                Color(0xFF16102A)
             )
         )
     } else {
         Brush.verticalGradient(
             colors = listOf(
-                Color(0xD8FFFFFF),
-                Color(0xA5F3ECFC)
+                Color.White,
+                Color.White
             )
         )
     }
@@ -5684,23 +6056,7 @@ fun InteractiveGeometricCard(
     } else {
         BorderStroke(
             width = 1.dp,
-            brush = if (isDarkThemeGlobal) {
-                Brush.linearGradient(
-                    colors = listOf(
-                        LuxGoldChange.copy(alpha = 0.35f),
-                        Color.White.copy(alpha = 0.05f),
-                        LuxGoldChange.copy(alpha = 0.15f)
-                    )
-                )
-            } else {
-                Brush.linearGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.8f),
-                        Color(0xFFCAC4D0).copy(alpha = 0.2f),
-                        LuxGoldChange.copy(alpha = 0.15f)
-                    )
-                )
-            }
+            color = if (isDarkThemeGlobal) LuxGoldChange.copy(alpha = 0.20f) else Color(0xFFEBE6F4)
         )
     }
 
@@ -5855,235 +6211,181 @@ fun PredictiveEomSavingsWidget(
     val currentMonthExpenses = remember(transactions, currentYear, currentMonth) {
         transactions.filter {
             txCal.timeInMillis = it.date
-            txCal.get(Calendar.YEAR) == currentYear &&
-            txCal.get(Calendar.MONTH) == currentMonth &&
-            it.type.lowercase() == "expense"
+            txCal.get(Calendar.YEAR) == currentYear && txCal.get(Calendar.MONTH) == currentMonth && it.type.lowercase() == "expense"
         }
     }
-    
     val currentMonthIncomes = remember(transactions, currentYear, currentMonth) {
         transactions.filter {
             txCal.timeInMillis = it.date
-            txCal.get(Calendar.YEAR) == currentYear &&
-            txCal.get(Calendar.MONTH) == currentMonth &&
-            it.type.lowercase() == "income"
+            txCal.get(Calendar.YEAR) == currentYear && txCal.get(Calendar.MONTH) == currentMonth && it.type.lowercase() == "income"
         }
     }
 
     val totalSpentSoFar = currentMonthExpenses.sumOf { it.amount }
     val totalIncomeSoFar = currentMonthIncomes.sumOf { it.amount }
     val effectiveExpectedIncome = maxOf(salary, totalIncomeSoFar)
-
-    // Current month-to-date velocity
     val dailySpendVelocity = if (elapsedDays > 0) totalSpentSoFar / elapsedDays else 0.0
-
-    // Projected remaining spend if velocity continues
     val projectedDiscretionarySpend = dailySpendVelocity * daysRemaining
-
-    // Filter unpaid bills in this month
     val upcomingUnpaidBillsTotal = bills.filter { bill ->
         val lastPaidCal = Calendar.getInstance()
-        val isPaidThisMonth = if (bill.lastPaidTimestamp == 0L) {
-            false
-        } else {
-            lastPaidCal.timeInMillis = bill.lastPaidTimestamp
-            lastPaidCal.get(Calendar.MONTH) == currentMonth && lastPaidCal.get(Calendar.YEAR) == currentYear
-        }
+        val isPaidThisMonth = if (bill.lastPaidTimestamp == 0L) false
+        else { lastPaidCal.timeInMillis = bill.lastPaidTimestamp; lastPaidCal.get(Calendar.MONTH) == currentMonth && lastPaidCal.get(Calendar.YEAR) == currentYear }
         !isPaidThisMonth && bill.dueDate > elapsedDays
     }.sumOf { it.amount }
-
     val totalProjectedSpend = totalSpentSoFar + projectedDiscretionarySpend + upcomingUnpaidBillsTotal
     val projectedSavings = (effectiveExpectedIncome - totalProjectedSpend).coerceAtLeast(0.0)
     val projectedSavingsRate = if (effectiveExpectedIncome > 0.0) (projectedSavings / effectiveExpectedIncome) * 100.0 else 0.0
 
-    // Health Assessment
-    val (healthRank, healthColor) = remember(projectedSavingsRate) {
-        when {
-            projectedSavingsRate >= 20.0 -> "EXCELLENT" to Color(0xFF4CAF50)
-            projectedSavingsRate >= 10.0 -> "OPTIMAL" to LuxGoldChange
-            projectedSavingsRate > 0.0 -> "BORDERLINE" to Color(0xFFFF9800)
-            else -> "CAPITAL DEFICIT" to Color(0xFFF44336)
-        }
+    val (healthRank, healthColor) = when {
+        projectedSavingsRate >= 20.0 -> "EXCELLENT" to Color(0xFF4CAF50)
+        projectedSavingsRate >= 10.0 -> "OPTIMAL" to LuxGoldChange
+        projectedSavingsRate > 0.0  -> "BORDERLINE" to Color(0xFFFF9800)
+        else                         -> "DEFICIT" to Color(0xFFF44336)
     }
+
+    var showDetail by remember { mutableStateOf(false) }
+    val animatedSweep by animateFloatAsState(
+        targetValue = (projectedSavingsRate / 100f * 240f).toFloat().coerceIn(0f, 240f),
+        animationSpec = tween(1200, easing = androidx.compose.animation.core.EaseOutCubic),
+        label = "arc"
+    )
 
     CinematicGlassCard(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp)
+        shape = RoundedCornerShape(28.dp),
+        onClick = { showDetail = !showDetail }
     ) {
-        Column(modifier = Modifier.padding(18.dp)) {
+        Column(modifier = Modifier.fillMaxWidth().padding(20.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(32.dp)
-                            .background(healthColor.copy(alpha = 0.12f), RoundedCornerShape(8.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = healthColor,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "PREDICTIVE SAVINGS AUDIT",
-                            style = Typography.labelLarge,
-                            color = LuxGoldChange,
-                            letterSpacing = 1.sp
-                        )
-                        Text(
-                            text = "Estimated dynamic EOM liquid reserve",
-                            style = Typography.bodySmall,
-                            color = LuxMuted
-                        )
-                    }
+                Column {
+                    Text("PREDICTIVE SAVINGS AUDIT", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 1.5.sp)
+                    Text("Tap to expand · EOM forecast", fontSize = 11.sp, color = LuxMuted)
                 }
                 Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(healthColor.copy(alpha = 0.18f))
-                        .border(0.5.dp, healthColor.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                        .background(healthColor.copy(alpha = 0.15f))
+                        .border(0.5.dp, healthColor.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
-                    Text(
-                        text = healthRank,
-                        color = healthColor,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.5.sp
-                    )
+                    Text(healthRank, color = healthColor, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.8.sp)
                 }
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(20.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom
-            ) {
-                Column {
-                    Text(
-                        text = "ESTIMATED SAVINGS",
-                        fontSize = 10.sp,
-                        color = LuxMuted,
-                        letterSpacing = 0.5.sp
+            Box(modifier = Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
+                Canvas(modifier = Modifier.size(160.dp)) {
+                    val strokePx = 16.dp.toPx()
+                    val startAngle = 150f
+                    val inset = strokePx / 2f
+                    val arcRect = androidx.compose.ui.geometry.Rect(inset, inset, size.width - inset, size.height - inset)
+                    drawArc(
+                        color = LuxCardGray, startAngle = startAngle, sweepAngle = 240f, useCenter = false,
+                        topLeft = arcRect.topLeft, size = arcRect.size, style = Stroke(width = strokePx, cap = StrokeCap.Round)
                     )
-                    Text(
-                        text = "$currency${String.format("%,.0f", projectedSavings)}",
-                        style = Typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = LuxIvory
-                    )
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(
-                        text = "FORECASTED SAVINGS RATE",
-                        fontSize = 10.sp,
-                        color = LuxMuted,
-                        letterSpacing = 0.5.sp
-                    )
-                    Text(
-                        text = "${String.format("%.1f", projectedSavingsRate)}%",
-                        style = Typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = healthColor
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            val progressFraction = (projectedSavingsRate / 100.0).coerceIn(0.0, 1.0).toFloat()
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(LuxCardGray)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth(progressFraction)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(healthColor.copy(alpha = 0.5f), healthColor)
-                            )
+                    if (animatedSweep > 0f) {
+                        drawArc(
+                            brush = Brush.sweepGradient(
+                                colors = listOf(healthColor.copy(alpha = 0.5f), healthColor),
+                                center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+                            ),
+                            startAngle = startAngle, sweepAngle = animatedSweep, useCenter = false,
+                            topLeft = arcRect.topLeft, size = arcRect.size, style = Stroke(width = strokePx, cap = StrokeCap.Round)
                         )
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-            Divider(color = LuxGoldChange.copy(alpha = 0.12f))
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column {
-                    Text(text = "DAILY SPEED", fontSize = 9.sp, color = LuxMuted)
-                    Text(
-                        text = "$currency${String.format("%,.0f", dailySpendVelocity)}/day",
-                        color = LuxIvory,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                        val rad = Math.toRadians((startAngle + animatedSweep).toDouble())
+                        val cx = size.width / 2f + (arcRect.size.width / 2f) * kotlin.math.cos(rad).toFloat()
+                        val cy = size.height / 2f + (arcRect.size.height / 2f) * kotlin.math.sin(rad).toFloat()
+                        drawCircle(color = healthColor.copy(alpha = 0.3f), radius = 10.dp.toPx(), center = androidx.compose.ui.geometry.Offset(cx, cy))
+                        drawCircle(color = healthColor, radius = 5.dp.toPx(), center = androidx.compose.ui.geometry.Offset(cx, cy))
+                    }
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(text = "MTD OUTLAYS", fontSize = 9.sp, color = LuxMuted)
-                    Text(
-                        text = "$currency${String.format("%,.0f", totalSpentSoFar)}",
-                        color = LuxIvory,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Column(horizontalAlignment = Alignment.End) {
-                    Text(text = "UNPAID BILLS", fontSize = 9.sp, color = LuxMuted)
-                    Text(
-                        text = "$currency${String.format("%,.0f", upcomingUnpaidBillsTotal)}",
-                        color = Color(0xFFF44336).copy(alpha = 0.8f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("${String.format("%.1f", projectedSavingsRate)}%", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = healthColor)
+                    Text("savings rate", fontSize = 10.sp, color = LuxMuted)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("$currency${String.format("%,.0f", projectedSavings)}", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = LuxIvory)
                 }
             }
 
-            // warning banner
-            if (dailySpendVelocity > (effectiveExpectedIncome / 30.0) * 0.9) {
-                Spacer(modifier = Modifier.height(10.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(Color(0xFFE53935).copy(alpha = 0.12f))
-                        .border(0.5.dp, Color(0xFFE53935).copy(alpha = 0.3f), RoundedCornerShape(6.dp))
-                        .padding(8.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = Color(0xFFEF5350),
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Daily burn velocity is running extremely hot relative to income parameters!",
-                            color = Color(0xFFE57373),
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Medium
-                        )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("DAILY BURN", fontSize = 9.sp, color = LuxMuted)
+                    Text("$currency${String.format("%,.0f", dailySpendVelocity)}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LuxIvory)
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("MTD SPEND", fontSize = 9.sp, color = LuxMuted)
+                    Text("$currency${String.format("%,.0f", totalSpentSoFar)}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = LuxIvory)
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("UNPAID BILLS", fontSize = 9.sp, color = LuxMuted)
+                    Text("$currency${String.format("%,.0f", upcomingUnpaidBillsTotal)}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (upcomingUnpaidBillsTotal > 0) Color(0xFFF44336) else LuxIvory)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                Icon(
+                    imageVector = if (showDetail) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null, tint = LuxGoldChange.copy(alpha = 0.6f), modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+
+    AnimatedVisibility(
+        visible = showDetail,
+        enter = slideInVertically(initialOffsetY = { -it / 2 }, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { -it / 2 }, animationSpec = tween(200)) + fadeOut()
+    ) {
+        Card(
+            modifier = modifier.fillMaxWidth().padding(top = 4.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
+            border = BorderStroke(1.dp, healthColor.copy(alpha = 0.3f))
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("FORECAST BREAKDOWN", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 1.5.sp)
+                listOf(
+                    Triple("Expected Income", "$currency${String.format("%,.0f", effectiveExpectedIncome)}", LuxIvory),
+                    Triple("Spent so far (${elapsedDays}d)", "-$currency${String.format("%,.0f", totalSpentSoFar)}", Color(0xFFF44336).copy(alpha = 0.85f)),
+                    Triple("Projected remaining spend", "-$currency${String.format("%,.0f", projectedDiscretionarySpend)}", Color(0xFFFF9800).copy(alpha = 0.85f)),
+                    Triple("Unpaid bills due", "-$currency${String.format("%,.0f", upcomingUnpaidBillsTotal)}", Color(0xFFF44336).copy(alpha = 0.7f)),
+                    Triple("→ Estimated EOM savings", "$currency${String.format("%,.0f", projectedSavings)}", healthColor),
+                ).forEach { (label, value, color) ->
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(label, fontSize = 12.sp, color = LuxMuted, modifier = Modifier.weight(1f))
+                        Text(value, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = color)
+                    }
+                }
+                HorizontalDivider(color = LuxGoldChange.copy(alpha = 0.12f))
+                val elapsedFrac = (elapsedDays.toFloat() / totalDaysInMonth).coerceIn(0f, 1f)
+                Column {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("Day $elapsedDays of $totalDaysInMonth", fontSize = 11.sp, color = LuxMuted)
+                        Text("$daysRemaining days remaining", fontSize = 11.sp, color = LuxGoldChange)
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Box(modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(LuxCardGray)) {
+                        Box(modifier = Modifier.fillMaxHeight().fillMaxWidth(elapsedFrac).clip(RoundedCornerShape(2.dp)).background(LuxGoldChange.copy(alpha = 0.7f)))
+                    }
+                }
+                if (dailySpendVelocity > (effectiveExpectedIncome / 30.0) * 0.9) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFF44336).copy(alpha = 0.10f))
+                            .border(0.5.dp, Color(0xFFF44336).copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFEF5350), modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Burn velocity is critically high relative to income.", color = Color(0xFFE57373), fontSize = 11.sp)
                     }
                 }
             }
@@ -6243,43 +6545,77 @@ fun GeometricSpendingVsSavingsChart(
             )
             Spacer(modifier = Modifier.height(16.dp))
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(96.dp)
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Bottom
-            ) {
-                val matchTemplateHeights = listOf(0.35f, 0.60f, 0.95f, 0.50f, 0.80f, 0.45f, 0.70f)
-                val days = listOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
-                
-                days.forEachIndexed { idx, day ->
-                    val heightRatio = matchTemplateHeights[idx]
-                    val isPeak = idx == 2 || idx == 4
-                    val barColor = if (isPeak) LuxGoldChange else Color(0xFFE8DEF8)
-                    
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Bottom
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(0.6f)
-                                .fillMaxHeight(heightRatio)
-                                .background(
-                                    color = barColor,
-                                    shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
-                                )
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = day,
-                            fontSize = 10.sp,
-                            color = LuxMuted,
-                            fontWeight = FontWeight.SemiBold
-                        )
+            // Compute daily spend for the last 7 days from real transactions
+            val weeklySpend = remember(transactions) {
+                val txCal = Calendar.getInstance()
+                List(7) { offset ->
+                    val target = Calendar.getInstance().apply { add(Calendar.DAY_OF_YEAR, -(6 - offset)) }
+                    val targetDay = target.get(Calendar.DAY_OF_YEAR)
+                    val targetYear = target.get(Calendar.YEAR)
+                    transactions.filter {
+                        txCal.timeInMillis = it.date
+                        txCal.get(Calendar.DAY_OF_YEAR) == targetDay &&
+                        txCal.get(Calendar.YEAR) == targetYear &&
+                        it.type.equals("expense", ignoreCase = true)
+                    }.sumOf { it.amount }
+                }
+            }
+            val maxWeeklySpend = weeklySpend.maxOrNull() ?: 0.0
+            val hasWeeklyData = maxWeeklySpend > 0.0
+
+            val days = listOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+
+            if (!hasWeeklyData) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().height(80.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No expense transactions in the last 7 days",
+                        color = LuxMuted.copy(alpha = 0.6f),
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(96.dp)
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    val todayDowIndex = (Calendar.getInstance().get(Calendar.DAY_OF_WEEK) + 5) % 7 // Mon=0..Sun=6
+
+                    days.forEachIndexed { idx, day ->
+                        val spend = weeklySpend[idx]
+                        val heightRatio = if (maxWeeklySpend > 0.0) (spend / maxWeeklySpend).toFloat().coerceIn(0.02f, 1f) else 0.02f
+                        val isToday = idx == todayDowIndex
+                        val barColor = if (isToday) LuxGoldChange else Color(0xFFE8DEF8)
+
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Bottom
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth(0.6f)
+                                    .fillMaxHeight(heightRatio)
+                                    .background(
+                                        color = barColor,
+                                        shape = RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
+                                    )
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = day,
+                                fontSize = 10.sp,
+                                color = if (isToday) LuxGoldChange else LuxMuted,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
                     }
                 }
             }
@@ -6790,28 +7126,66 @@ fun YoYMonthlySavingsRateChart(
     profile: UserProfile?,
     modifier: Modifier = Modifier
 ) {
-    val salary = profile?.salaryAmount ?: 60000.0
+    val salary = profile?.salaryAmount ?: 0.0
     val calendar = Calendar.getInstance()
     val currentMonth = calendar.get(Calendar.MONTH)
     val currentYear = calendar.get(Calendar.YEAR)
-    
-    val currentMonthExpenses = transactions.filter {
-        val txCal = Calendar.getInstance().apply { timeInMillis = it.date }
-        txCal.get(Calendar.YEAR) == currentYear &&
-        txCal.get(Calendar.MONTH) == currentMonth &&
-        it.type.lowercase() == "expense"
-    }.sumOf { it.amount }
-    
-    val dynamicCurrentRate = if (salary > 0.0) {
-        ((salary - currentMonthExpenses) / salary * 100.0).coerceIn(0.0, 100.0).toFloat()
-    } else {
-        25f
+
+    val monthsBack = 6
+
+    // Compute per-month savings rates from real transactions for current year and prior year.
+    // Rate = ((income - expenses) / income) * 100 if income > 0, else 0.
+
+    val months = remember {
+        List(monthsBack) { offset ->
+            Calendar.getInstance().apply { add(Calendar.MONTH, -(monthsBack - 1 - offset)) }
+                .getDisplayName(Calendar.MONTH, Calendar.SHORT, Locale.getDefault()) ?: ""
+        }
     }
 
-    val months = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun")
-    val rate2025 = listOf(14f, 18f, 16f, 22f, 19f, 21f)
-    val base2026 = listOf(16f, 21f, 18f, 26f, 24f)
-    val rate2026 = base2026 + dynamicCurrentRate
+    val rate2026 = remember(transactions) {
+        val txCal = Calendar.getInstance()
+        List(monthsBack) { offset ->
+            val target = Calendar.getInstance().apply { add(Calendar.MONTH, -(monthsBack - 1 - offset)) }
+            val yr = target.get(Calendar.YEAR)
+            val mo = target.get(Calendar.MONTH)
+            val income = transactions.filter {
+                txCal.timeInMillis = it.date
+                txCal.get(Calendar.YEAR) == yr && txCal.get(Calendar.MONTH) == mo &&
+                it.type.equals("income", ignoreCase = true)
+            }.sumOf { it.amount }
+            val expenses = transactions.filter {
+                txCal.timeInMillis = it.date
+                txCal.get(Calendar.YEAR) == yr && txCal.get(Calendar.MONTH) == mo &&
+                it.type.equals("expense", ignoreCase = true)
+            }.sumOf { it.amount }
+            if (income > 0.0) ((income - expenses) / income * 100.0).coerceIn(0.0, 100.0).toFloat() else 0f
+        }
+    }
+
+    val rate2025 = remember(transactions) {
+        val txCal = Calendar.getInstance()
+        List(monthsBack) { offset ->
+            val target = Calendar.getInstance().apply { add(Calendar.MONTH, -(monthsBack - 1 - offset)); add(Calendar.YEAR, -1) }
+            val yr = target.get(Calendar.YEAR)
+            val mo = target.get(Calendar.MONTH)
+            val income = transactions.filter {
+                txCal.timeInMillis = it.date
+                txCal.get(Calendar.YEAR) == yr && txCal.get(Calendar.MONTH) == mo &&
+                it.type.equals("income", ignoreCase = true)
+            }.sumOf { it.amount }
+            val expenses = transactions.filter {
+                txCal.timeInMillis = it.date
+                txCal.get(Calendar.YEAR) == yr && txCal.get(Calendar.MONTH) == mo &&
+                it.type.equals("expense", ignoreCase = true)
+            }.sumOf { it.amount }
+            if (income > 0.0) ((income - expenses) / income * 100.0).coerceIn(0.0, 100.0).toFloat() else 0f
+        }
+    }
+
+    val hasAnyData = remember(rate2026, rate2025) {
+        rate2026.any { it > 0f } || rate2025.any { it > 0f }
+    }
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -6838,27 +7212,43 @@ fun YoYMonthlySavingsRateChart(
                         color = LuxMuted
                     )
                 }
-                
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .background(LuxGoldChange, androidx.compose.foundation.shape.CircleShape)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(text = "2026 (OS)", color = LuxIvory, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .border(1.dp, LuxGoldLight, androidx.compose.foundation.shape.CircleShape)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(text = "2025", color = LuxMuted, fontSize = 9.sp)
+
+                if (hasAnyData) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .background(LuxGoldChange, androidx.compose.foundation.shape.CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = "${currentYear} (Live)", color = LuxIvory, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .border(1.dp, LuxGoldLight, androidx.compose.foundation.shape.CircleShape)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = "${currentYear - 1}", color = LuxMuted, fontSize = 9.sp)
+                        }
                     }
                 }
+            }
+
+            if (!hasAnyData) {
+                Spacer(modifier = Modifier.height(24.dp))
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(imageVector = Icons.Outlined.TrendingUp, contentDescription = null, tint = LuxMuted, modifier = Modifier.size(32.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(text = "No data yet", color = LuxMuted, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text(text = "Add income & expense transactions to build your savings rate trend", color = LuxMuted.copy(alpha = 0.6f), fontSize = 11.sp, textAlign = TextAlign.Center)
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                return@Column
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -6998,14 +7388,19 @@ fun YoYMonthlySavingsRateChart(
             Divider(color = LuxGoldChange.copy(alpha = 0.1f))
             Spacer(modifier = Modifier.height(12.dp))
 
-            val avg2026 = rate2026.average()
-            val avg2025 = rate2025.average()
+            val activeMonths2026 = rate2026.count { it > 0f }
+            val activeMonths2025 = rate2025.count { it > 0f }
+            val avg2026 = if (activeMonths2026 > 0) rate2026.filter { it > 0f }.average() else 0.0
+            val avg2025 = if (activeMonths2025 > 0) rate2025.filter { it > 0f }.average() else 0.0
             val efficiencyDiff = avg2026 - avg2025
 
             Text(
-                text = "Audit Summary: 2026 year-to-date average saving trajectory is ${String.format("%.1f", avg2026)}% compared to ${String.format("%.1f", avg2025)}% in 2025. " +
-                        (if (efficiencyDiff > 0) "Performance improved by ${String.format("%.1f", efficiencyDiff)}% due to System Strict Mode optimizations." 
-                        else "Performance matches base level. Stabilize discretionary debt payments."),
+                text = when {
+                    activeMonths2026 == 0 -> "Add income & expense transactions to see your savings velocity trend."
+                    activeMonths2025 == 0 -> "Year-to-date average: ${String.format("%.1f", avg2026)}%. No prior-year data to compare against yet."
+                    efficiencyDiff > 0 -> "Audit Summary: ${currentYear} YTD average is ${String.format("%.1f", avg2026)}% vs ${String.format("%.1f", avg2025)}% in ${currentYear - 1}. Improved by ${String.format("%.1f", efficiencyDiff)}%."
+                    else -> "Audit Summary: ${currentYear} YTD average is ${String.format("%.1f", avg2026)}% vs ${String.format("%.1f", avg2025)}% in ${currentYear - 1}. Stabilize discretionary spend to improve."
+                },
                 color = LuxMuted,
                 fontSize = 11.sp,
                 lineHeight = 16.sp
@@ -8283,288 +8678,157 @@ fun FirebaseAuthenticationScreen(onAuthSuccess: (String) -> Unit) {
     var showGoogleChooser by remember { mutableStateOf(false) }
     var isGoogleSigningIn by remember { mutableStateOf(false) }
     var showGuestInfoModal by remember { mutableStateOf(false) }
+    var passwordVisible by remember { mutableStateOf(false) }
 
+    // Loading overlay dialog
     if (isAuthenticating) {
         Dialog(onDismissRequest = {}) {
             Card(
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-                border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.5f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp)
+                border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.4f)),
+                modifier = Modifier.fillMaxWidth().padding(24.dp)
             ) {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
+                    modifier = Modifier.fillMaxWidth().padding(32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    CircularProgressIndicator(color = LuxGoldChange, modifier = Modifier.size(48.dp))
+                    CircularProgressIndicator(
+                        color = LuxGoldChange,
+                        modifier = Modifier.size(48.dp),
+                        strokeWidth = 3.dp
+                    )
                     Spacer(modifier = Modifier.height(20.dp))
                     Text(
-                        text = if (successMessage.isNotEmpty()) successMessage else t("Securing your connection...", "कनेक्शन सुरक्षित किया जा रहा है...", "Securing connection..."),
-                        color = LuxIvory,
-                        fontSize = 14.sp,
-                        textAlign = TextAlign.Center,
-                        fontWeight = FontWeight.Medium
+                        text = if (successMessage.isNotEmpty()) successMessage
+                               else t("Securing your connection...", "कनेक्शन सुरक्षित किया जा रहा है...", "Securing connection..."),
+                        color = LuxIvory, fontSize = 14.sp, textAlign = TextAlign.Center, fontWeight = FontWeight.Medium
                     )
                 }
             }
         }
     }
 
+    // Guest mode info dialog
     if (showGuestInfoModal) {
         Dialog(onDismissRequest = { showGuestInfoModal = false }) {
             Card(
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-                border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.5f)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
+                border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.4f)),
+                modifier = Modifier.fillMaxWidth().padding(16.dp)
             ) {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
+                    modifier = Modifier.fillMaxWidth().padding(28.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Warning,
-                        contentDescription = "Warning",
-                        tint = LuxGoldChange,
-                        modifier = Modifier.size(40.dp)
-                    )
-
+                    Box(
+                        modifier = Modifier.size(56.dp)
+                            .background(LuxGoldChange.copy(alpha = 0.15f), androidx.compose.foundation.shape.CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(28.dp))
+                    }
                     Spacer(modifier = Modifier.height(16.dp))
-
                     Text(
                         text = t("GUEST MODE LIMITATIONS", "अतिथि मोड की सीमाएं", "Guest Mode Limitations"),
-                        style = Typography.labelLarge,
-                        color = LuxGoldChange,
-                        letterSpacing = 1.sp,
-                        textAlign = TextAlign.Center
+                        style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 1.sp, textAlign = TextAlign.Center
                     )
-                    
                     Spacer(modifier = Modifier.height(12.dp))
-
                     Text(
                         text = t(
-                            "Please note: In Guest Mode, all budget & transaction tracking is saved LOCALLY on your browser/device cache.",
-                            "कृपया ध्यान दें: अतिथि मोड में, आपकी सभी जानकारी आपके स्थानीय ब्राउज़र/डिवाइस कैश में सुरक्षित होती है।",
-                            "Dhyan dein: Guest Mode me aapka sara budget data local device/browser storage me save hota hai."
+                            "In Guest Mode, all data is saved locally on your device. Clearing app data or reinstalling will permanently erase your records.",
+                            "अतिथि मोड में, सभी डेटा आपके डिवाइस पर स्थानीय रूप से सहेजा जाता है। ऐप डेटा साफ़ करने से डेटा स्थायी रूप से हट जाएगा।",
+                            "Guest Mode me data local device pe save hota hai. App clear karne se data permanently delete ho jayega."
                         ),
-                        fontSize = 13.sp,
-                        color = LuxIvory,
-                        textAlign = TextAlign.Center,
-                        lineHeight = 18.sp
+                        fontSize = 13.sp, color = LuxIvory, textAlign = TextAlign.Center, lineHeight = 20.sp
                     )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Text(
-                        text = t(
-                            "⚠️ If you clear browser cache, wipe storage, or reinstall the app, you will lose your data permanently.",
-                            "⚠️ यदि आप ब्राउज़र कैश साफ करते हैं, ऐप रीइंस्टॉल करते हैं या स्टोरेज मिटाते हैं, तो आपका डेटा स्थायी रूप से नष्ट हो जाएगा।",
-                            "⚠️ Agar aap cache clear karenge ya app clear data karenge, toh aapka local data fully delete ho jayega."
-                        ),
-                        fontSize = 12.sp,
-                        color = LuxGoldChange.copy(alpha = 0.9f),
-                        textAlign = TextAlign.Center,
-                        lineHeight = 16.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedButton(
                             onClick = { showGuestInfoModal = false },
                             border = BorderStroke(1.dp, LuxMuted),
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Text(t("Go Back", "पीछे जाएँ", "Go Back"), color = LuxIvory, fontSize = 11.sp)
-                        }
-
+                        ) { Text(t("Go Back", "पीछे जाएँ", "Go Back"), color = LuxIvory, fontSize = 13.sp) }
                         Button(
                             onClick = {
                                 showGuestInfoModal = false
                                 errorMessage = ""
-                                successMessage = t("Initializing guest sandbox session...", "अतिथि सत्र प्रारंभ हो रहा है...", "Guest session shuru ho raha hai...")
+                                successMessage = t("Initializing guest session...", "अतिथि सत्र प्रारंभ हो रहा है...", "Guest session shuru ho raha hai...")
                                 isAuthenticating = true
                                 scope.launch {
                                     delay(1200)
-                                    successMessage = t("Firebase Success! Logging into OS...", "मंजूरी मिली! स्वागत है!", "Firebase approved! Login ho gaya!")
-                                    delay(600)
                                     isAuthenticating = false
                                     onAuthSuccess("Guest@auren.io")
                                 }
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
-                            shape = RoundedCornerShape(8.dp),
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1.2f)
-                        ) {
-                            Text(t("Proceed", "स्वीकार करें", "Understood"), fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
+                        ) { Text(t("Proceed", "स्वीकार करें", "Understood"), fontSize = 13.sp, fontWeight = FontWeight.Bold) }
                     }
                 }
             }
         }
     }
 
+    // Google account chooser dialog
     if (showGoogleChooser) {
         Dialog(onDismissRequest = { showGoogleChooser = false }) {
             Card(
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = Color.White),
-                border = BorderStroke(1.dp, Color.LightGray),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
+                border = BorderStroke(1.dp, Color(0xFFE0E0E0)),
+                modifier = Modifier.fillMaxWidth().padding(16.dp)
             ) {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
+                    modifier = Modifier.fillMaxWidth().padding(28.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Text(text = "G", color = Color(0xFF4285F4), fontWeight = FontWeight.Bold, fontSize = 24.sp)
-                        Text(text = "o", color = Color(0xFFEA4335), fontWeight = FontWeight.Bold, fontSize = 22.sp)
-                        Text(text = "o", color = Color(0xFFFBBC05), fontWeight = FontWeight.Bold, fontSize = 22.sp)
-                        Text(text = "g", color = Color(0xFF4285F4), fontWeight = FontWeight.Bold, fontSize = 22.sp)
-                        Text(text = "l", color = Color(0xFF34A853), fontWeight = FontWeight.Bold, fontSize = 22.sp)
-                        Text(text = "e", color = Color(0xFFEA4335), fontWeight = FontWeight.Bold, fontSize = 22.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("G", color = Color(0xFF4285F4), fontWeight = FontWeight.Bold, fontSize = 26.sp)
+                        Text("o", color = Color(0xFFEA4335), fontWeight = FontWeight.Bold, fontSize = 24.sp)
+                        Text("o", color = Color(0xFFFBBC05), fontWeight = FontWeight.Bold, fontSize = 24.sp)
+                        Text("g", color = Color(0xFF4285F4), fontWeight = FontWeight.Bold, fontSize = 24.sp)
+                        Text("l", color = Color(0xFF34A853), fontWeight = FontWeight.Bold, fontSize = 24.sp)
+                        Text("e", color = Color(0xFFEA4335), fontWeight = FontWeight.Bold, fontSize = 24.sp)
                     }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        text = "Sign in to Auren Money OS",
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 18.sp,
-                        color = Color.Black
-                    )
-                    Text(
-                        text = "to continue to your secure dashboard",
-                        fontSize = 12.sp,
-                        color = Color.Gray,
-                        textAlign = TextAlign.Center
-                    )
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    HorizontalDivider(color = Color.LightGray.copy(alpha = 0.5f))
-
                     Spacer(modifier = Modifier.height(12.dp))
-
+                    Text("Sign in to Auren", fontWeight = FontWeight.SemiBold, fontSize = 18.sp, color = Color.Black)
+                    Text("to continue to your secure dashboard", fontSize = 12.sp, color = Color.Gray, textAlign = TextAlign.Center)
+                    Spacer(modifier = Modifier.height(20.dp))
+                    HorizontalDivider(color = Color(0xFFE0E0E0))
+                    Spacer(modifier = Modifier.height(12.dp))
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
                             .clickable {
                                 showGoogleChooser = false
                                 scope.launch {
                                     isAuthenticating = true
-                                    successMessage = t("Launching Google Sign-In framework...", "गूगल लॉगिन शुरू हो रहा है...", "Google log in shuru ho raha hai...")
-                                    delay(1200)
+                                    delay(1400)
                                     isAuthenticating = false
-                                    successMessage = t("Google Success! Welcome, Aditya.", "गूगल प्रमाणीकरण सफल! स्वागत है आदित्य।", "Google sign-in success! Swagat hai Aditya.")
-                                    delay(600)
                                     onAuthSuccess("adityasrivastav.work@gmail.com")
                                 }
-                            }
-                            .padding(12.dp),
+                            }.padding(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .background(Color(0xFFE8F0FE), androidx.compose.foundation.shape.CircleShape),
+                            modifier = Modifier.size(40.dp).background(Color(0xFFE8F0FE), androidx.compose.foundation.shape.CircleShape),
                             contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = "A",
-                                color = Color(0xFF1A73E8),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
-                            )
-                        }
+                        ) { Text("A", color = Color(0xFF1A73E8), fontWeight = FontWeight.Bold, fontSize = 16.sp) }
                         Spacer(modifier = Modifier.width(12.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Aditya Srivastav",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = Color.Black
-                            )
-                            Text(
-                                text = "adityasrivastav.work@gmail.com",
-                                fontSize = 12.sp,
-                                color = Color.DarkGray
-                            )
+                            Text("Aditya Srivastav", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
+                            Text("adityasrivastav.work@gmail.com", fontSize = 12.sp, color = Color.DarkGray)
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable {
-                                showGoogleChooser = false
-                                scope.launch {
-                                    isAuthenticating = true
-                                    successMessage = t("Launching Google Sign-In framework...", "गूगल लॉगिन शुरू हो रहा है...", "Google log in shuru ho raha hai...")
-                                    delay(1200)
-                                    isAuthenticating = false
-                                    successMessage = t("Google Success! Welcome, Aditya.", "गूगल प्रमाणीकरण सफल! स्वागत है आदित्य।", "Google sign-in success! Swagat hai Aditya.")
-                                    delay(600)
-                                    onAuthSuccess("adityasrivastav.work@gmail.com")
-                                }
-                            }
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .background(Color(0xFFF1F3F4), androidx.compose.foundation.shape.CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = null,
-                                tint = Color.DarkGray
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = "Use another account",
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp,
-                            color = Color.Black
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Text(
-                        text = "To create a seamless experience, Google will share your name and email address with Auren Money OS.",
-                        fontSize = 11.sp,
-                        color = Color.Gray,
-                        textAlign = TextAlign.Center
-                    )
-
                     Spacer(modifier = Modifier.height(16.dp))
-
+                    Text(
+                        "Google will share your name and email with Auren.",
+                        fontSize = 11.sp, color = Color.Gray, textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
                     TextButton(onClick = { showGoogleChooser = false }) {
                         Text("Cancel", color = Color(0xFF1A73E8))
                     }
@@ -8579,76 +8843,204 @@ fun FirebaseAuthenticationScreen(onAuthSuccess: (String) -> Unit) {
         Brush.verticalGradient(colors = listOf(Color(0xFFFAF6FE), Color(0xFFEDE4F5)))
     }
 
+    // Shield animations
+    val infiniteTransition = rememberInfiniteTransition(label = "shield")
+    val shieldPulse by infiniteTransition.animateFloat(
+        initialValue = 0.92f, targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1600, easing = androidx.compose.animation.core.EaseInOutSine),
+            repeatMode = RepeatMode.Reverse
+        ), label = "pulse"
+    )
+    val glowAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.25f, targetValue = 0.7f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = androidx.compose.animation.core.EaseInOutSine),
+            repeatMode = RepeatMode.Reverse
+        ), label = "glow"
+    )
+    val orbRotation by infiniteTransition.animateFloat(
+        initialValue = 0f, targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(12000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ), label = "orb"
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(authBg)
-            .padding(24.dp)
             .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(40.dp))
-
-        // App Identity with Shield Symbol
+        // ── Hero Section ────────────────────────────────────────────
         Box(
             modifier = Modifier
-                .size(72.dp)
-                .background(LuxDarkGray, RoundedCornerShape(20.dp))
-                .border(2.dp, LuxGoldChange, RoundedCornerShape(20.dp)),
+                .fillMaxWidth()
+                .height(300.dp),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = Icons.Default.Shield,
-                contentDescription = null,
-                tint = LuxGoldChange,
-                modifier = Modifier.size(36.dp)
-            )
+            // Animated orbital glow rings behind shield
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val basePurple = if (isDarkThemeGlobal) Color(0xFF4A3880) else Color(0xFF6750A4)
+                // Pulsing inner ring
+                drawCircle(
+                    color = basePurple.copy(alpha = glowAlpha * 0.45f),
+                    radius = 110.dp.toPx() * shieldPulse,
+                    center = androidx.compose.ui.geometry.Offset(cx, cy)
+                )
+                // Steady outer ring
+                drawCircle(
+                    color = basePurple.copy(alpha = 0.10f),
+                    radius = 148.dp.toPx(),
+                    center = androidx.compose.ui.geometry.Offset(cx, cy)
+                )
+                // Rotating dashed orbit line
+                rotate(orbRotation, pivot = androidx.compose.ui.geometry.Offset(cx, cy)) {
+                    drawCircle(
+                        color = basePurple.copy(alpha = 0.20f),
+                        radius = 128.dp.toPx(),
+                        center = androidx.compose.ui.geometry.Offset(cx, cy),
+                        style = Stroke(
+                            width = 1.5.dp.toPx(),
+                            pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(14f, 10f), 0f)
+                        )
+                    )
+                }
+            }
+
+            // Floating orbital icon bubbles
+            val bubbleBg = if (isDarkThemeGlobal) Color(0xFF2A1E45) else Color.White
+            val bubbleShadow = if (isDarkThemeGlobal) Color.Transparent else Color(0x14000000)
+
+            // Left bubble — lock
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = 20.dp, y = (-20).dp)
+                    .size(48.dp)
+                    .background(bubbleBg, androidx.compose.foundation.shape.CircleShape)
+                    .border(1.dp, LuxGoldChange.copy(alpha = 0.2f), androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(imageVector = Icons.Default.Lock, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(22.dp))
+            }
+
+            // Right-top bubble — person
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = (-28).dp, y = 52.dp)
+                    .size(44.dp)
+                    .background(bubbleBg, androidx.compose.foundation.shape.CircleShape)
+                    .border(1.dp, LuxGoldChange.copy(alpha = 0.2f), androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(imageVector = Icons.Default.Person, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(20.dp))
+            }
+
+            // Right-bottom bubble — check
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = (-24).dp, y = (-32).dp)
+                    .size(46.dp)
+                    .background(bubbleBg, androidx.compose.foundation.shape.CircleShape)
+                    .border(1.dp, LuxGoldChange.copy(alpha = 0.2f), androidx.compose.foundation.shape.CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(22.dp))
+            }
+
+            // Central shield stack
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .size(80.dp)
+                        .scale(shieldPulse)
+                        .background(
+                            Brush.linearGradient(listOf(LuxGoldChange, LuxGoldChange.copy(alpha = 0.7f))),
+                            RoundedCornerShape(20.dp)
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Glow overlay
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.radialGradient(listOf(Color.White.copy(alpha = glowAlpha * 0.3f), Color.Transparent)),
+                                RoundedCornerShape(20.dp)
+                            )
+                    )
+                    Icon(imageVector = Icons.Default.Shield, contentDescription = null, tint = Color.White, modifier = Modifier.size(44.dp))
+                }
+                // Stacked platform discs below shield
+                Spacer(modifier = Modifier.height(4.dp))
+                Box(
+                    modifier = Modifier
+                        .width(64.dp).height(10.dp)
+                        .background(LuxGoldChange.copy(alpha = 0.35f), RoundedCornerShape(50.dp))
+                )
+                Spacer(modifier = Modifier.height(3.dp))
+                Box(
+                    modifier = Modifier
+                        .width(50.dp).height(8.dp)
+                        .background(LuxGoldChange.copy(alpha = 0.2f), RoundedCornerShape(50.dp))
+                )
+                Spacer(modifier = Modifier.height(3.dp))
+                Box(
+                    modifier = Modifier
+                        .width(38.dp).height(6.dp)
+                        .background(LuxGoldChange.copy(alpha = 0.12f), RoundedCornerShape(50.dp))
+                )
+            }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
-
+        // ── Header Labels ───────────────────────────────────────────
         Text(
-            text = t("SECURE CLIENT PORTAL", "सुरक्षित लॉगिन प्रवेश", "Secure Login Gate"),
+            text = t("SECURE CLIENT PORTAL", "सुरक्षित क्लाइंट पोर्टल", "Secure Client Portal"),
             style = Typography.labelLarge,
-            color = LuxGoldChange,
-            letterSpacing = 2.sp
+            color = LuxGoldChange.copy(alpha = 0.8f),
+            letterSpacing = 3.sp,
+            fontSize = 10.sp
         )
+        Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = t("Auren Firebase OS", "ऑरेन फ़ायरबेस ओएस", "Auren Firebase OS"),
-            style = Typography.headlineMedium,
+            text = t("Auren Money OS", "ऑरेन मनी ओएस", "Auren Money OS"),
+            style = Typography.headlineLarge,
             color = LuxIvory,
             fontWeight = FontWeight.Bold
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        // Quick Language Toggle
+        // Language toggle pill
         Row(
             modifier = Modifier
-                .background(LuxDarkGray, RoundedCornerShape(12.dp))
+                .background(LuxDarkGray, RoundedCornerShape(50.dp))
+                .border(1.dp, LuxGoldChange.copy(alpha = 0.15f), RoundedCornerShape(50.dp))
                 .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             listOf("English", "Hinglish", "Hindi").forEach { lng ->
                 val selected = langOption == lng
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(50.dp))
                         .background(if (selected) LuxGoldChange else Color.Transparent)
                         .clickable { langOption = lng }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .padding(horizontal = 14.dp, vertical = 7.dp)
                 ) {
                     Text(
-                        text = when (lng) {
-                            "Hindi" -> "हिन्दी"
-                            "Hinglish" -> "Hinglish"
-                            else -> "English"
-                        },
-                        color = if (selected) LuxBlack else LuxIvory,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
+                        text = when (lng) { "Hindi" -> "हिंदी"; else -> lng },
+                        color = if (selected) Color.White else LuxMuted,
+                        fontSize = 12.sp,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                     )
                 }
             }
@@ -8656,221 +9048,267 @@ fun FirebaseAuthenticationScreen(onAuthSuccess: (String) -> Unit) {
 
         Spacer(modifier = Modifier.height(24.dp))
 
+        // ── Auth Card ───────────────────────────────────────────────
         Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
-            border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.25f))
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = LuxCardGray),
+            elevation = CardDefaults.cardElevation(defaultElevation = if (isDarkThemeGlobal) 0.dp else 2.dp),
+            border = BorderStroke(1.dp, if (isDarkThemeGlobal) LuxGoldChange.copy(alpha = 0.18f) else Color(0xFFE8E0F0))
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp)
+                    .padding(horizontal = 24.dp, vertical = 28.dp)
             ) {
-                Text(
-                    text = if (isSignUp) t("CREATE SECURE USER", "नया खाता बनाएं", "Naya account banayein") 
-                           else t("AUTHENTICATE ACCOUNT", "लॉगिन करें", "Apne account me login karein"),
-                    style = Typography.labelLarge,
-                    color = LuxGoldChange,
-                    letterSpacing = 1.sp
-                )
-                
-                Spacer(modifier = Modifier.height(12.dp))
+                // Card header
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(LuxGoldChange.copy(alpha = 0.12f), RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(imageVector = Icons.Default.Shield, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = if (isSignUp) t("Create Account", "खाता बनाएं", "Account Banayein")
+                                   else t("Authenticate Account", "खाते की पुष्टि करें", "Login Karein"),
+                            style = Typography.titleMedium,
+                            color = LuxIvory,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isSignUp) t("Set up your secure client portal", "अपना सुरक्षित पोर्टल बनाएं", "Apna secure portal banayein")
+                                   else t("Access your secure client portal", "अपने सुरक्षित पोर्टल तक पहुंचें", "Apne secure portal me jayein"),
+                            fontSize = 12.sp,
+                            color = LuxMuted
+                        )
+                    }
+                }
 
-                // Email Input
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Email field
+                val fieldBg = if (isDarkThemeGlobal) Color(0xFF1E1530) else Color.White
+                val fieldBorder = if (isDarkThemeGlobal) Color(0xFF3A3050) else Color(0xFFDDD8E8)
+                val fieldBorderFocused = LuxGoldChange
+
                 OutlinedTextField(
                     value = email,
                     onValueChange = { email = it },
-                    label = { Text(t("Email Address", "ईमेल पता", "Apna email address")) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange),
+                    placeholder = { Text(t("Email address", "ईमेल पता", "Email address"), color = LuxMuted) },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.Email, contentDescription = null, tint = LuxGoldChange.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+                    },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = fieldBorderFocused,
+                        unfocusedBorderColor = fieldBorder,
+                        focusedContainerColor = fieldBg,
+                        unfocusedContainerColor = fieldBg,
+                        focusedTextColor = LuxIvory,
+                        unfocusedTextColor = LuxIvory,
+                        cursorColor = LuxGoldChange
+                    ),
+                    shape = RoundedCornerShape(14.dp),
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     modifier = Modifier.fillMaxWidth()
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Password Input
+                // Password field
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = { Text(t("Password (min 6 chars)", "पासवर्ड (कम से कम 6 अक्षर)", "Password (kam se kam 6 char)")) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange),
+                    placeholder = { Text(t("Password (min 6 chars)", "पासवर्ड (कम से कम 6 अक्षर)", "Password (6+ chars)"), color = LuxMuted) },
+                    leadingIcon = {
+                        Icon(imageVector = Icons.Default.Lock, contentDescription = null, tint = LuxGoldChange.copy(alpha = 0.7f), modifier = Modifier.size(20.dp))
+                    },
+                    trailingIcon = {
+                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                tint = LuxMuted
+                            )
+                        }
+                    },
+                    visualTransformation = if (passwordVisible) androidx.compose.ui.text.input.VisualTransformation.None
+                                           else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = fieldBorderFocused,
+                        unfocusedBorderColor = fieldBorder,
+                        focusedContainerColor = fieldBg,
+                        unfocusedContainerColor = fieldBg,
+                        focusedTextColor = LuxIvory,
+                        unfocusedTextColor = LuxIvory,
+                        cursorColor = LuxGoldChange
+                    ),
+                    shape = RoundedCornerShape(14.dp),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                // Error / success feedback
                 if (errorMessage.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(text = errorMessage, color = LuxError, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(imageVector = Icons.Default.Warning, contentDescription = null, tint = LuxError, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = errorMessage, color = LuxError, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                if (successMessage.isNotEmpty() && !isAuthenticating) {
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null, tint = LuxGreen, modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = successMessage, color = LuxGreen, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    }
                 }
 
-                if (successMessage.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(text = successMessage, color = LuxGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
+                Spacer(modifier = Modifier.height(20.dp))
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Action Button
+                // Primary CTA — Sign in / Register
                 Button(
                     onClick = {
                         errorMessage = ""
                         successMessage = ""
                         if (!email.contains("@")) {
-                            errorMessage = t("Invalid email address", "गलत ईमेल पता", "Sahi email id daalein")
+                            errorMessage = t("Please enter a valid email address", "कृपया सही ईमेल पता दर्ज करें", "Sahi email id daalein")
                             return@Button
                         }
                         if (password.length < 6) {
-                            errorMessage = t("Password must be at least 6 characters", "पासवर्ड 6 अक्षरों से बड़ा होना चाहिए", "Password kam se kam 6 characters ka hona chahiye")
+                            errorMessage = t("Password must be at least 6 characters", "पासवर्ड 6 अक्षरों से बड़ा होना चाहिए", "Password 6+ characters ka hona chahiye")
                             return@Button
                         }
                         isAuthenticating = true
-                        successMessage = t("Connecting with Firebase console...", "फ़ायरबेस से जुड़ रहा है...", "Firebase se connect ho raha hai...")
+                        successMessage = t("Connecting with Firebase...", "फ़ायरबेस से जुड़ रहा है...", "Firebase se connect ho raha hai...")
                         scope.launch {
-                            delay(1200)
-                            successMessage = t("Firebase Success! Logging into OS...", "मंजूरी मिली! स्वागत है!", "Firebase approved! Login ho gaya!")
-                            delay(600)
+                            delay(1400)
                             isAuthenticating = false
                             onAuthSuccess(email)
                         }
                     },
                     enabled = !isAuthenticating,
-                    colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = Color.White),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth().height(52.dp)
                 ) {
-                    if (isAuthenticating && !isGoogleSigningIn && !successMessage.contains("guest") && !successMessage.contains("अतिथि")) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = LuxBlack)
+                    if (isAuthenticating) {
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Color.White, strokeWidth = 2.5.dp)
                     } else {
-                        Text(
-                            text = if (isSignUp) t("Register via Firebase", "फ़ायरबेस पर साइन अप करें", "Firebase register karein")
-                                   else t("Log In via Firebase", "फ़ायरबेस से लॉग इन करें", "Firebase se secure login karein"),
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-
-                // Coroutines handle delays safely and prevent cancellation during recompositions
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Toggle Login / SignUp
-                Text(
-                    text = if (isSignUp) t("Already have a secure account? Login", "पहले से खाता है? लॉगिन करें", "Pehle se account hai? Login karein")
-                           else t("New to Auren? Create secure account via Firebase", "नया सुरक्षित खाता बनाएं", "Naya account banayein - Click here"),
-                    color = LuxGoldChange,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { isSignUp = !isSignUp }
-                        .padding(8.dp)
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    HorizontalDivider(modifier = Modifier.weight(1f), color = LuxGoldChange.copy(alpha = 0.2f))
-                    Text(
-                        text = t("  OR  ", "  अथवा  ", "  OR  "),
-                        color = LuxMuted,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    )
-                    HorizontalDivider(modifier = Modifier.weight(1f), color = LuxGoldChange.copy(alpha = 0.2f))
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Sign in with Google Button
-                Button(
-                    onClick = { showGoogleChooser = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = LuxCardGray, contentColor = LuxIvory),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Text(text = "G", color = Color(0xFF4285F4), fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        Text(text = "o", color = Color(0xFFEA4335), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(text = "o", color = Color(0xFFFBBC05), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(text = "g", color = Color(0xFF4285F4), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(text = "l", color = Color(0xFF34A853), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        Text(text = "e", color = Color(0xFFEA4335), fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                        
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = t("Sign-In via Google", "गूगल से लॉगिन करें", "Google Sign-In"),
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                            color = LuxIvory
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Try as Guest Button
-                OutlinedButton(
-                    onClick = {
-                        showGuestInfoModal = true
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.3f))
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = null,
-                            tint = LuxGoldChange,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Icon(imageVector = Icons.Default.Shield, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = t("Continue as Guest", "अतिथि की तरह जारी रखें", "Try as a Guest"),
-                            color = LuxIvory,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold
+                            text = if (isSignUp) t("Create account securely", "सुरक्षित खाता बनाएं", "Secure account banayein")
+                                   else t("Sign in securely", "सुरक्षित रूप से लॉगिन करें", "Securely sign in karein"),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
                         )
                     }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Toggle login / register
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isSignUp) t("Already have an account? ", "पहले से खाता है? ", "Pehle se account hai? ")
+                               else t("New to Auren? ", "नए यहाँ हैं? ", "New hai? "),
+                        color = LuxMuted, fontSize = 13.sp
+                    )
+                    Text(
+                        text = if (isSignUp) t("Sign in", "लॉगिन करें", "Login karein")
+                               else t("Create a secure account via Firebase", "Firebase पर खाता बनाएं", "Firebase account banayein"),
+                        color = LuxGoldChange, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.clickable { isSignUp = !isSignUp; errorMessage = ""; successMessage = "" }
+                    )
                 }
             }
         }
 
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // OR divider
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            HorizontalDivider(modifier = Modifier.weight(1f), color = LuxGoldChange.copy(alpha = 0.18f))
+            Text(
+                text = t("  OR  ", "  अथवा  ", "  OR  "),
+                color = LuxMuted, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp)
+            )
+            HorizontalDivider(modifier = Modifier.weight(1f), color = LuxGoldChange.copy(alpha = 0.18f))
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Stable Firebase Sync Info
+        // Google button
+        OutlinedButton(
+            onClick = { showGoogleChooser = true },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(52.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.outlinedButtonColors(containerColor = LuxCardGray),
+            border = BorderStroke(1.dp, if (isDarkThemeGlobal) Color(0xFF3A3050) else Color(0xFFDDD8E8))
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                Text("G", color = Color(0xFF4285F4), fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text("o", color = Color(0xFFEA4335), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("o", color = Color(0xFFFBBC05), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("g", color = Color(0xFF4285F4), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("l", color = Color(0xFF34A853), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("e", color = Color(0xFFEA4335), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(t("Continue with Google", "Google से जारी रखें", "Google se continue karein"), fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = LuxIvory)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Guest button
+        OutlinedButton(
+            onClick = { showGuestInfoModal = true },
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).height(52.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.outlinedButtonColors(containerColor = LuxCardGray),
+            border = BorderStroke(1.dp, if (isDarkThemeGlobal) Color(0xFF3A3050) else Color(0xFFDDD8E8))
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                Icon(imageVector = Icons.Default.Person, contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(t("Continue as Guest", "अतिथि के रूप में जारी रखें", "Guest ke roop me continue karein"), fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = LuxIvory)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Firebase status badge
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp)
+            modifier = Modifier.fillMaxWidth().padding(bottom = 32.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .background(LuxGreen, androidx.compose.foundation.shape.CircleShape)
-            )
+            Box(modifier = Modifier.size(7.dp).background(LuxGreen, androidx.compose.foundation.shape.CircleShape))
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = t("Firebase Status: Secured & Initialized (v34.11.0)", "फ़ायरबेस स्थिति: सक्रिय एवं सुरक्षित", "Firebase client running securely"),
-                color = LuxMuted,
-                fontSize = 11.sp
+                text = t("Firebase Status: Secured & initialized (v34.11.0)", "फ़ायरबेस स्थिति: सुरक्षित एवं सक्रिय", "Firebase secure hai (v34.11.0)"),
+                color = LuxMuted, fontSize = 11.sp
             )
         }
     }
 }
+

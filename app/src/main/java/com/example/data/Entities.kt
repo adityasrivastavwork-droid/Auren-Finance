@@ -30,7 +30,8 @@ data class UserProfile(
      * Stored as one column (not N booleans) so adding a future widget requires no
      * schema migration — see [com.example.data.WidgetId] for the canonical id list.
      */
-    val hiddenWidgets: String = ""
+    val hiddenWidgets: String = "",
+    val shakeToAddEnabled: Boolean = false
 )
 
 @Entity(tableName = "accounts")

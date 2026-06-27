@@ -8,6 +8,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -19,6 +20,8 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -33,13 +36,12 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -47,6 +49,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.data.DashboardConfig
 import com.example.data.UserProfile
 import com.example.data.WidgetId
@@ -59,58 +62,150 @@ import com.example.ui.theme.LuxIvory
 import com.example.ui.theme.LuxMuted
 import com.example.ui.theme.Typography
 
+/* ─────────────────────── Entry models ─────────────────────── */
+
+data class AccountEntry(
+    val name: String,
+    val type: String,
+    val balance: Double,
+    val isPrimary: Boolean,
+    val creditLimit: Double = 0.0
+)
+
+data class RecurringEntry(
+    val name: String,
+    val amount: Double,
+    val dueDay: Int,
+    val category: String,
+    val isSubscription: Boolean
+)
+
+/* ─────────────────────── Step constants ─────────────────────── */
+
+private const val STEP_WELCOME = 0
+private const val STEP_OBJECTIVE_MODE = 1
+private const val STEP_INCOME = 2
+private const val STEP_FOUNDATION = 3
+private const val STEP_ACCOUNTS = 4
+private const val STEP_RECURRING = 5
+private const val STEP_DASHBOARD = 6
+private const val STEP_REVIEW = 7
+private const val STEP_COUNT = 8
+
 /**
  * Multi-step onboarding wizard for Auren Money OS.
  *
- * Six steps:
- *   1. Welcome — brand reveal, no inputs.
- *   2. Objective + Mode — strategy.
- *   3. Income — currency, salary, payday.
- *   4. Foundation — opening balance + safety buffer.
- *   5. Customize Dashboard — per-widget toggle (skippable).
- *   6. Review — confirm every choice, edit any row by tap.
- *
- * Design notes (from `auren-onboarding-design` workflow + adversarial critiques):
- *   - State persists to [UserProfile] after every Continue tap (no in-memory loss on
- *     process death). `profile.onboardingStep` is the cursor.
- *   - Final commit is ONE transactional [FinanceViewModel.onboardUser] call (no race).
- *   - System back button is routed via [BackHandler] to the wizard's own back.
- *   - Widget storage is a single CSV column (not N booleans).
- *   - Every preference is editable later via [SettingsSidebar].
+ * Eight steps:
+ *   0. Welcome — brand reveal, no inputs.
+ *   1. Objective + Mode — strategy.
+ *   2. Income — currency, salary, payday (with type selector + working days).
+ *   3. Foundation — opening balance + safety buffer.
+ *   4. Accounts — add bank accounts, designate primary.
+ *   5. Recurring — EMIs, rent, subscriptions (skippable).
+ *   6. Customize Dashboard — per-widget toggle + drag-to-reorder.
+ *   7. Review — confirm every choice, edit any row by tap.
  */
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
 fun OnboardingFlow(
     profile: UserProfile?,
     viewModel: FinanceViewModel,
-    onComplete: (currency: String, objective: String, mode: String, salary: Double, payday: Int, balance: Double, buffer: Double, hiddenWidgets: String) -> Unit
+    onComplete: (
+        currency: String,
+        objective: String,
+        mode: String,
+        salary: Double,
+        payday: Int,
+        balance: Double,
+        buffer: Double,
+        hiddenWidgets: String,
+        accounts: List<AccountEntry>,
+        recurringItems: List<RecurringEntry>
+    ) -> Unit
 ) {
-    // Resume from the persisted cursor (0..STEP_COUNT-1). -1 means completed so we'd
-    // never have entered the flow; coerce defensively to 0.
     val initialStep = (profile?.onboardingStep ?: 0).coerceIn(0, STEP_COUNT - 1)
-    var step: Int by rememberSaveable { mutableStateOf(initialStep) }
+    var step by rememberSaveable { mutableStateOf(initialStep) }
 
-    // Local edit state — seeded from existing profile so resume preserves entries.
-    var currency: String by rememberSaveable { mutableStateOf(profile?.currency ?: "₹") }
-    var objective: String by rememberSaveable { mutableStateOf(profile?.primaryObjective ?: "Control spending") }
-    var mode: String by rememberSaveable { mutableStateOf(profile?.appMode ?: "Strict Mode") }
-    var salaryText: String by rememberSaveable { mutableStateOf(profile?.salaryAmount?.toInt()?.toString() ?: "60000") }
-    var paydayText: String by rememberSaveable { mutableStateOf(profile?.salaryDate?.toString() ?: "1") }
-    var balanceText: String by rememberSaveable { mutableStateOf("25000") }
-    var bufferText: String by rememberSaveable { mutableStateOf(profile?.safetyBuffer?.toInt()?.toString() ?: "2000") }
-    var dashboardConfig: DashboardConfig by rememberSaveable(
-        stateSaver = androidx.compose.runtime.saveable.Saver<DashboardConfig, String>(
+    // Core profile state
+    var currency by rememberSaveable { mutableStateOf(profile?.currency ?: "₹") }
+    var objective by rememberSaveable { mutableStateOf(profile?.primaryObjective ?: "Control spending") }
+    var mode by rememberSaveable { mutableStateOf(profile?.appMode ?: "Strict Mode") }
+    var salaryText by rememberSaveable { mutableStateOf(profile?.salaryAmount?.toInt()?.toString() ?: "60000") }
+    var paydayText by rememberSaveable { mutableStateOf(profile?.salaryDate?.toString() ?: "1") }
+    var balanceText by rememberSaveable { mutableStateOf("25000") }
+    var bufferText by rememberSaveable { mutableStateOf(profile?.safetyBuffer?.toInt()?.toString() ?: "2000") }
+
+    // Payday type state
+    var paydayType by rememberSaveable { mutableStateOf("specific") } // "specific", "last_working", "last_day"
+    var workingDays by rememberSaveable { mutableStateOf("1,2,3,4,5") } // CSV 0=Sun,1=Mon..6=Sat
+    var workingDaysMode by rememberSaveable { mutableStateOf("mon_fri") } // "mon_fri", "mon_sat", "custom"
+
+    // Dashboard config
+    var dashboardConfig by rememberSaveable(
+        stateSaver = Saver(
             save = { it.toCsv() },
             restore = { DashboardConfig.fromCsv(it) }
         )
     ) { mutableStateOf(DashboardConfig.fromCsv(profile?.hiddenWidgets)) }
 
+    // Widget ordering (CSV of WidgetId keys)
+    var widgetOrderCsv by rememberSaveable {
+        mutableStateOf(WidgetId.values().joinToString(",") { it.key })
+    }
+    val orderedWidgets: List<WidgetId> = remember(widgetOrderCsv) {
+        widgetOrderCsv.split(",").mapNotNull { WidgetId.fromKey(it.trim()) }
+            .let { parsed ->
+                // Ensure all widgets are present (add missing ones at end)
+                val all = WidgetId.values().toList()
+                parsed + all.filter { it !in parsed }
+            }
+    }
+
+    // Accounts state — list of mutable entry holders
+    var accountEntries by rememberSaveable(stateSaver = Saver(
+        save = { list: List<AccountEntry> ->
+            list.joinToString("|") { "${it.name}§${it.type}§${it.balance}§${it.isPrimary}§${it.creditLimit}" }
+        },
+        restore = { s: String ->
+            if (s.isBlank()) emptyList()
+            else s.split("|").mapNotNull { part ->
+                val p = part.split("§")
+                if (p.size >= 5) AccountEntry(p[0], p[1], p[2].toDoubleOrNull() ?: 0.0, p[3].toBoolean(), p[4].toDoubleOrNull() ?: 0.0)
+                else null
+            }
+        }
+    )) { mutableStateOf(emptyList<AccountEntry>()) }
+
+    // Recurring state
+    var recurringEntries by rememberSaveable(stateSaver = Saver(
+        save = { list: List<RecurringEntry> ->
+            list.joinToString("|") { "${it.name}§${it.amount}§${it.dueDay}§${it.category}§${it.isSubscription}" }
+        },
+        restore = { s: String ->
+            if (s.isBlank()) emptyList()
+            else s.split("|").mapNotNull { part ->
+                val p = part.split("§")
+                if (p.size >= 5) RecurringEntry(p[0], p[1].toDoubleOrNull() ?: 0.0, p[2].toIntOrNull() ?: 1, p[3], p[4].toBoolean())
+                else null
+            }
+        }
+    )) { mutableStateOf(emptyList<RecurringEntry>()) }
+
     val salaryValid = (salaryText.toDoubleOrNull() ?: 0.0) > 0.0
-    val paydayValid = paydayText.toIntOrNull()?.let { it in 1..31 } == true
+    val paydayValid = when (paydayType) {
+        "specific" -> paydayText.toIntOrNull()?.let { it in 1..31 } == true
+        else -> true
+    }
     val balanceValid = (balanceText.toDoubleOrNull() ?: -1.0) >= 0.0
     val bufferValid = (bufferText.toDoubleOrNull() ?: -1.0) >= 0.0
     val bufferOverBalance = (bufferText.toDoubleOrNull() ?: 0.0) > (balanceText.toDoubleOrNull() ?: 0.0)
     val widgetsValid = dashboardConfig.hasAnyVisible
+    val accountsValid = accountEntries.isEmpty() || accountEntries.all { it.name.isNotBlank() && it.balance >= 0.0 }
+
+    fun resolvedPayday(): Int = when (paydayType) {
+        "specific" -> paydayText.toIntOrNull()?.coerceIn(1, 31) ?: 1
+        else -> 0 // sentinel: 0 = last_working / last_day
+    }
 
     fun goNext() {
         val nextStep = (step + 1).coerceAtMost(STEP_COUNT - 1)
@@ -120,7 +215,7 @@ fun OnboardingFlow(
             objective = objective,
             mode = mode,
             salary = salaryText.toDoubleOrNull(),
-            payday = paydayText.toIntOrNull(),
+            payday = resolvedPayday(),
             buffer = bufferText.toDoubleOrNull(),
             hiddenWidgets = dashboardConfig.toCsv()
         )
@@ -137,24 +232,26 @@ fun OnboardingFlow(
             objective,
             mode,
             salaryText.toDoubleOrNull() ?: 60000.0,
-            paydayText.toIntOrNull()?.coerceIn(1, 31) ?: 1,
+            resolvedPayday(),
             balanceText.toDoubleOrNull() ?: 25000.0,
             bufferText.toDoubleOrNull() ?: 2000.0,
-            dashboardConfig.toCsv()
+            dashboardConfig.toCsv(),
+            accountEntries,
+            recurringEntries
         )
     }
 
-    // Intercept system back gesture for steps 1..N-1; step 0 lets it bubble (app exit).
     BackHandler(enabled = step > 0) { goBack() }
 
-    // Per-step CTA enable flag.
     val ctaEnabled = when (step) {
         STEP_WELCOME -> true
         STEP_OBJECTIVE_MODE -> objective.isNotBlank() && mode.isNotBlank()
         STEP_INCOME -> salaryValid && paydayValid
         STEP_FOUNDATION -> balanceValid && bufferValid
+        STEP_ACCOUNTS -> accountsValid
+        STEP_RECURRING -> true
         STEP_DASHBOARD -> widgetsValid
-        STEP_REVIEW -> salaryValid && paydayValid && balanceValid && bufferValid && widgetsValid
+        STEP_REVIEW -> salaryValid && paydayValid && balanceValid && bufferValid && widgetsValid && accountsValid
         else -> true
     }
 
@@ -165,7 +262,6 @@ fun OnboardingFlow(
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // Progress bar — quiet, single thin row of 6 segments.
         ProgressBar(step = step, total = STEP_COUNT)
 
         AnimatedContent(
@@ -198,10 +294,16 @@ fun OnboardingFlow(
                     STEP_INCOME -> IncomeStep(
                         currency = currency,
                         salary = salaryText,
-                        payday = paydayText,
+                        paydayText = paydayText,
+                        paydayType = paydayType,
+                        workingDays = workingDays,
+                        workingDaysMode = workingDaysMode,
                         onCurrency = { currency = it },
                         onSalary = { salaryText = it },
-                        onPayday = { paydayText = it }
+                        onPaydayText = { paydayText = it },
+                        onPaydayType = { paydayType = it },
+                        onWorkingDays = { workingDays = it },
+                        onWorkingDaysMode = { workingDaysMode = it }
                     )
                     STEP_FOUNDATION -> FoundationStep(
                         currency = currency,
@@ -211,43 +313,52 @@ fun OnboardingFlow(
                         onBalance = { balanceText = it },
                         onBuffer = { bufferText = it }
                     )
+                    STEP_ACCOUNTS -> AccountsStep(
+                        currency = currency,
+                        entries = accountEntries,
+                        onEntriesChange = { accountEntries = it }
+                    )
+                    STEP_RECURRING -> RecurringStep(
+                        currency = currency,
+                        entries = recurringEntries,
+                        onEntriesChange = { recurringEntries = it }
+                    )
                     STEP_DASHBOARD -> DashboardStep(
                         config = dashboardConfig,
-                        onToggle = { widget -> dashboardConfig = dashboardConfig.toggle(widget) }
+                        orderedWidgets = orderedWidgets,
+                        onToggle = { widget -> dashboardConfig = dashboardConfig.toggle(widget) },
+                        onReorder = { newOrder -> widgetOrderCsv = newOrder.joinToString(",") { it.key } }
                     )
                     STEP_REVIEW -> ReviewStep(
                         currency = currency,
                         objective = objective,
                         mode = mode,
                         salary = salaryText,
-                        payday = paydayText,
+                        paydayType = paydayType,
+                        paydayText = paydayText,
+                        workingDays = workingDays,
+                        workingDaysMode = workingDaysMode,
                         balance = balanceText,
                         buffer = bufferText,
                         config = dashboardConfig,
+                        accountEntries = accountEntries,
+                        recurringEntries = recurringEntries,
                         onEdit = { editStep -> step = editStep }
                     )
                 }
             }
         }
 
-        // Bottom CTA bar — Back (when applicable) + primary action.
         BottomBar(
             step = step,
             ctaEnabled = ctaEnabled,
+            recurringEmpty = recurringEntries.isEmpty(),
             onBack = ::goBack,
             onNext = ::goNext,
             onCommit = ::commit
         )
     }
 }
-
-private const val STEP_WELCOME = 0
-private const val STEP_OBJECTIVE_MODE = 1
-private const val STEP_INCOME = 2
-private const val STEP_FOUNDATION = 3
-private const val STEP_DASHBOARD = 4
-private const val STEP_REVIEW = 5
-private const val STEP_COUNT = 6
 
 /* ─────────────────────── Progress bar ─────────────────────── */
 
@@ -307,7 +418,7 @@ private fun WelcomeStep() {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "We'll set up your finances in 5 quick steps. Every choice can be changed later from Settings.",
+            text = "We'll set up your finances in 7 quick steps. Every choice can be changed later from Settings.",
             color = LuxMuted.copy(alpha = 0.7f),
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
@@ -362,15 +473,23 @@ private fun ObjectiveModeStep(
 private fun IncomeStep(
     currency: String,
     salary: String,
-    payday: String,
+    paydayText: String,
+    paydayType: String,
+    workingDays: String,
+    workingDaysMode: String,
     onCurrency: (String) -> Unit,
     onSalary: (String) -> Unit,
-    onPayday: (String) -> Unit
+    onPaydayText: (String) -> Unit,
+    onPaydayType: (String) -> Unit,
+    onWorkingDays: (String) -> Unit,
+    onWorkingDaysMode: (String) -> Unit
 ) {
     StepHeader(
         title = "Income rails",
         subtitle = "How much you earn and when it lands."
     )
+
+    // Currency row
     SectionLabel("Currency")
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -401,6 +520,8 @@ private fun IncomeStep(
             }
         }
     }
+
+    // Salary
     SectionLabel("Monthly take-home")
     OutlinedTextField(
         value = salary,
@@ -419,26 +540,143 @@ private fun IncomeStep(
         ),
         shape = RoundedCornerShape(12.dp)
     )
-    SectionLabel("Payday (day of month)")
-    OutlinedTextField(
-        value = payday,
-        onValueChange = { input ->
-            if (input.length <= 2 && input.all { it.isDigit() }) onPayday(input)
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("onboarding_payday"),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        singleLine = true,
-        textStyle = TextStyle(color = LuxIvory, fontSize = 18.sp, fontWeight = FontWeight.SemiBold),
-        colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = LuxGoldChange,
-            unfocusedBorderColor = LuxCardGray,
-            cursorColor = LuxGoldChange
-        ),
-        shape = RoundedCornerShape(12.dp)
-    )
-    InfoTip("Auren will refresh your Safe-to-Spend limit on this day each month. For months without this date, we use the last day.")
+
+    // Payday type selector
+    SectionLabel("Payday schedule")
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        listOf(
+            "specific" to "Specific Day",
+            "last_working" to "Last Working Day",
+            "last_day" to "Last Day of Month"
+        ).forEach { (key, label) ->
+            val sel = paydayType == key
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(50.dp))
+                    .background(if (sel) LuxGoldChange else LuxCardGray)
+                    .border(1.dp, if (sel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(50.dp))
+                    .clickable { onPaydayType(key) }
+                    .padding(horizontal = 6.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    color = if (sel) LuxBlack else LuxIvory,
+                    fontSize = 11.sp,
+                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+
+    // Specific day number field
+    if (paydayType == "specific") {
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = paydayText,
+            onValueChange = { input ->
+                if (input.length <= 2 && input.all { it.isDigit() }) onPaydayText(input)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("onboarding_payday"),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true,
+            label = { Text("Day of month (1–31)", color = LuxMuted, fontSize = 12.sp) },
+            textStyle = TextStyle(color = LuxIvory, fontSize = 18.sp, fontWeight = FontWeight.SemiBold),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = LuxGoldChange,
+                unfocusedBorderColor = LuxCardGray,
+                cursorColor = LuxGoldChange
+            ),
+            shape = RoundedCornerShape(12.dp)
+        )
+    }
+
+    // Working days selector (shown for specific and last_working)
+    if (paydayType == "specific" || paydayType == "last_working") {
+        SectionLabel("Working days")
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf(
+                "mon_fri" to "Mon – Fri",
+                "mon_sat" to "Mon – Sat",
+                "custom" to "Custom"
+            ).forEach { (key, label) ->
+                val sel = workingDaysMode == key
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(50.dp))
+                        .background(if (sel) LuxGoldChange else LuxCardGray)
+                        .border(1.dp, if (sel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(50.dp))
+                        .clickable {
+                            onWorkingDaysMode(key)
+                            when (key) {
+                                "mon_fri" -> onWorkingDays("1,2,3,4,5")
+                                "mon_sat" -> onWorkingDays("1,2,3,4,5,6")
+                                // custom: keep current
+                            }
+                        }
+                        .padding(horizontal = 6.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        color = if (sel) LuxBlack else LuxIvory,
+                        fontSize = 11.sp,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        // Custom 7-checkbox row
+        if (workingDaysMode == "custom") {
+            Spacer(Modifier.height(12.dp))
+            val selectedDays = workingDays.split(",").mapNotNull { it.trim().toIntOrNull() }.toMutableSet()
+            val dayLabels = listOf("M" to 1, "T" to 2, "W" to 3, "T" to 4, "F" to 5, "S" to 6, "S" to 0)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                dayLabels.forEach { (label, dayIndex) ->
+                    val sel = dayIndex in selectedDays
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (sel) LuxGoldChange else LuxCardGray)
+                            .border(1.dp, if (sel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                            .clickable {
+                                val newSet = selectedDays.toMutableSet()
+                                if (sel) newSet.remove(dayIndex) else newSet.add(dayIndex)
+                                onWorkingDays(newSet.sorted().joinToString(","))
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (sel) LuxBlack else LuxIvory,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    InfoTip("Auren will refresh your Safe-to-Spend limit on your payday each month.")
 }
 
 @Composable
@@ -512,22 +750,532 @@ private fun FoundationStep(
 }
 
 @Composable
+private fun AccountsStep(
+    currency: String,
+    entries: List<AccountEntry>,
+    onEntriesChange: (List<AccountEntry>) -> Unit
+) {
+    StepHeader(
+        title = "Your bank accounts",
+        subtitle = "Add all accounts you actively use. Designate one primary."
+    )
+
+    InfoTip("Your primary account is where Safe-to-Spend and bill payments are tracked by default.")
+
+    if (entries.isEmpty()) {
+        Spacer(Modifier.height(24.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(LuxCardGray.copy(alpha = 0.3f))
+                .border(1.dp, LuxCardGray, RoundedCornerShape(12.dp))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "Add your first account below",
+                color = LuxMuted,
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center
+            )
+        }
+        Spacer(Modifier.height(10.dp))
+        InfoTip("You can also add accounts from the home screen later.")
+    } else {
+        entries.forEachIndexed { index, entry ->
+            Spacer(Modifier.height(10.dp))
+            AccountEntryCard(
+                currency = currency,
+                entry = entry,
+                onUpdate = { updated ->
+                    val newList = entries.toMutableList()
+                    newList[index] = updated
+                    onEntriesChange(newList)
+                },
+                onSetPrimary = {
+                    onEntriesChange(entries.mapIndexed { i, e -> e.copy(isPrimary = i == index) })
+                },
+                onDelete = {
+                    val newList = entries.toMutableList()
+                    newList.removeAt(index)
+                    // Ensure there's still a primary if we deleted it
+                    if (newList.isNotEmpty() && newList.none { it.isPrimary }) {
+                        newList[0] = newList[0].copy(isPrimary = true)
+                    }
+                    onEntriesChange(newList)
+                }
+            )
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    OutlinedButton(
+        onClick = {
+            val newEntry = AccountEntry(
+                name = "",
+                type = "Savings",
+                balance = 0.0,
+                isPrimary = entries.isEmpty()
+            )
+            onEntriesChange(entries + newEntry)
+        },
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.6f)),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = LuxGoldChange),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text("+ Add Account", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun AccountEntryCard(
+    currency: String,
+    entry: AccountEntry,
+    onUpdate: (AccountEntry) -> Unit,
+    onSetPrimary: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val accountTypes = listOf("Savings", "Current", "Wallet", "Credit Card", "Investment")
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = LuxCardGray.copy(alpha = 0.4f)),
+        border = BorderStroke(
+            1.dp,
+            if (entry.isPrimary) LuxGoldChange.copy(alpha = 0.6f) else LuxCardGray
+        ),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                // Name field
+                OutlinedTextField(
+                    value = entry.name,
+                    onValueChange = { onUpdate(entry.copy(name = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Account name (e.g. HDFC Savings)", color = LuxMuted, fontSize = 11.sp) },
+                    textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LuxGoldChange,
+                        unfocusedBorderColor = LuxCardGray,
+                        cursorColor = LuxGoldChange
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(Modifier.height(10.dp))
+
+                // Type chips
+                Text(
+                    text = "TYPE",
+                    color = LuxGoldChange,
+                    fontSize = 10.sp,
+                    letterSpacing = 2.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = 2.dp, bottom = 6.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    accountTypes.forEach { t ->
+                        val sel = entry.type == t
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (sel) LuxGoldChange else LuxCardGray)
+                                .border(1.dp, if (sel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                .clickable { onUpdate(entry.copy(type = t)) }
+                                .padding(horizontal = 4.dp, vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = t,
+                                color = if (sel) LuxBlack else LuxIvory,
+                                fontSize = 10.sp,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+
+                // Balance field
+                OutlinedTextField(
+                    value = if (entry.balance == 0.0) "" else entry.balance.toLong().toString(),
+                    onValueChange = { input ->
+                        if (input.all { it.isDigit() }) {
+                            onUpdate(entry.copy(balance = input.toDoubleOrNull() ?: 0.0))
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    label = { Text("Current balance", color = LuxMuted, fontSize = 11.sp) },
+                    leadingIcon = { Text(currency, color = LuxGoldChange, fontWeight = FontWeight.Bold, fontSize = 14.sp) },
+                    textStyle = TextStyle(color = LuxIvory, fontSize = 16.sp, fontWeight = FontWeight.SemiBold),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LuxGoldChange,
+                        unfocusedBorderColor = LuxCardGray,
+                        cursorColor = LuxGoldChange
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(Modifier.height(10.dp))
+
+                // Primary radio
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (entry.isPrimary) LuxGoldChange.copy(alpha = 0.12f) else Color.Transparent)
+                        .border(
+                            1.dp,
+                            if (entry.isPrimary) LuxGoldChange.copy(alpha = 0.4f) else LuxCardGray,
+                            RoundedCornerShape(8.dp)
+                        )
+                        .clickable { onSetPrimary() }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(16.dp)
+                            .clip(CircleShape)
+                            .background(if (entry.isPrimary) LuxGoldChange else Color.Transparent)
+                            .border(1.5.dp, if (entry.isPrimary) LuxGoldChange else LuxMuted, CircleShape)
+                    )
+                    Text(
+                        text = if (entry.isPrimary) "Primary account" else "Set as primary",
+                        color = if (entry.isPrimary) LuxGoldChange else LuxMuted,
+                        fontSize = 12.sp,
+                        fontWeight = if (entry.isPrimary) FontWeight.SemiBold else FontWeight.Normal
+                    )
+                }
+            }
+
+            // Delete button
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(32.dp)
+                    .padding(4.dp)
+            ) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Remove account",
+                    tint = LuxMuted,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecurringStep(
+    currency: String,
+    entries: List<RecurringEntry>,
+    onEntriesChange: (List<RecurringEntry>) -> Unit
+) {
+    StepHeader(
+        title = "Recurring commitments",
+        subtitle = "EMIs, rent, and subscriptions you pay every month."
+    )
+
+    InfoTip("These will be added as Protected Bills and shown in your Commitment Timeline.")
+
+    if (entries.isEmpty()) {
+        Spacer(Modifier.height(24.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(LuxCardGray.copy(alpha = 0.3f))
+                .border(1.dp, LuxCardGray, RoundedCornerShape(12.dp))
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "No recurring items added yet.\nTap Add below or skip this step.",
+                color = LuxMuted,
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center,
+                lineHeight = 18.sp
+            )
+        }
+    } else {
+        entries.forEachIndexed { index, entry ->
+            Spacer(Modifier.height(10.dp))
+            RecurringEntryCard(
+                currency = currency,
+                entry = entry,
+                onUpdate = { updated ->
+                    val newList = entries.toMutableList()
+                    newList[index] = updated
+                    onEntriesChange(newList)
+                },
+                onDelete = {
+                    val newList = entries.toMutableList()
+                    newList.removeAt(index)
+                    onEntriesChange(newList)
+                }
+            )
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    OutlinedButton(
+        onClick = {
+            val newEntry = RecurringEntry(
+                name = "",
+                amount = 0.0,
+                dueDay = 1,
+                category = "EMI",
+                isSubscription = false
+            )
+            onEntriesChange(entries + newEntry)
+        },
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.6f)),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = LuxGoldChange),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text("+ Add Recurring Item", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+    }
+}
+
+@Composable
+private fun RecurringEntryCard(
+    currency: String,
+    entry: RecurringEntry,
+    onUpdate: (RecurringEntry) -> Unit,
+    onDelete: () -> Unit
+) {
+    val categories = listOf("EMI", "Rent", "Utilities", "Subscription", "Insurance", "Other")
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = LuxCardGray.copy(alpha = 0.4f)),
+        border = BorderStroke(1.dp, LuxCardGray),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                // Name field
+                OutlinedTextField(
+                    value = entry.name,
+                    onValueChange = { onUpdate(entry.copy(name = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Name (e.g. Netflix, Home Loan EMI)", color = LuxMuted, fontSize = 11.sp) },
+                    textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LuxGoldChange,
+                        unfocusedBorderColor = LuxCardGray,
+                        cursorColor = LuxGoldChange
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // Amount field
+                    OutlinedTextField(
+                        value = if (entry.amount == 0.0) "" else entry.amount.toLong().toString(),
+                        onValueChange = { input ->
+                            if (input.all { it.isDigit() }) {
+                                onUpdate(entry.copy(amount = input.toDoubleOrNull() ?: 0.0))
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        label = { Text("Amount", color = LuxMuted, fontSize = 11.sp) },
+                        leadingIcon = { Text(currency, color = LuxGoldChange, fontWeight = FontWeight.Bold, fontSize = 13.sp) },
+                        textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = LuxGoldChange,
+                            unfocusedBorderColor = LuxCardGray,
+                            cursorColor = LuxGoldChange
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    // Due day field
+                    OutlinedTextField(
+                        value = if (entry.dueDay == 0) "" else entry.dueDay.toString(),
+                        onValueChange = { input ->
+                            if (input.length <= 2 && input.all { it.isDigit() }) {
+                                onUpdate(entry.copy(dueDay = input.toIntOrNull() ?: 1))
+                            }
+                        },
+                        modifier = Modifier.weight(0.6f),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        label = { Text("Due day", color = LuxMuted, fontSize = 11.sp) },
+                        textStyle = TextStyle(color = LuxIvory, fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = LuxGoldChange,
+                            unfocusedBorderColor = LuxCardGray,
+                            cursorColor = LuxGoldChange
+                        ),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Category chips
+                Text(
+                    text = "CATEGORY",
+                    color = LuxGoldChange,
+                    fontSize = 10.sp,
+                    letterSpacing = 2.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = 2.dp, bottom = 6.dp)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    categories.forEach { cat ->
+                        val sel = entry.category == cat
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50.dp))
+                                .background(if (sel) LuxGoldChange else LuxCardGray)
+                                .border(1.dp, if (sel) LuxGoldChange else LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(50.dp))
+                                .clickable {
+                                    onUpdate(
+                                        entry.copy(
+                                            category = cat,
+                                            isSubscription = cat == "Subscription"
+                                        )
+                                    )
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = cat,
+                                color = if (sel) LuxBlack else LuxIvory,
+                                fontSize = 11.sp,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Delete button
+            IconButton(
+                onClick = onDelete,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .size(32.dp)
+                    .padding(4.dp)
+            ) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Remove item",
+                    tint = LuxMuted,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun DashboardStep(
     config: DashboardConfig,
-    onToggle: (WidgetId) -> Unit
+    orderedWidgets: List<WidgetId>,
+    onToggle: (WidgetId) -> Unit,
+    onReorder: (List<WidgetId>) -> Unit
 ) {
     StepHeader(
         title = "Tune your dashboard",
-        subtitle = "Switch widgets on or off. You can change this anytime from Settings."
+        subtitle = "Drag to reorder · toggle on or off"
     )
-    WidgetId.values().forEach { w ->
+
+    // Drag state
+    var draggedIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    val cardHeightPx = remember { 72f * 3f } // approx 72dp * density, using 216f as rough estimate
+
+    orderedWidgets.forEachIndexed { index, w ->
         val visible = config.isVisible(w)
+        val isDragged = draggedIndex == index
+
+        Spacer(Modifier.height(8.dp))
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onToggle(w) },
+                .zIndex(if (isDragged) 1f else 0f)
+                .offset(y = if (isDragged) dragOffsetY.dp else 0.dp)
+                .clickable { onToggle(w) }
+                .pointerInput(index) {
+                    detectDragGestures(
+                        onDragStart = {
+                            draggedIndex = index
+                            dragOffsetY = 0f
+                        },
+                        onDragEnd = {
+                            draggedIndex = null
+                            dragOffsetY = 0f
+                        },
+                        onDragCancel = {
+                            draggedIndex = null
+                            dragOffsetY = 0f
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            dragOffsetY += dragAmount.y / 3f
+                            // Swap when dragged more than half a card height
+                            val halfCard = cardHeightPx / 2f
+                            val currentIdx = draggedIndex ?: return@detectDragGestures
+                            when {
+                                dragOffsetY > halfCard && currentIdx < orderedWidgets.size - 1 -> {
+                                    val newList = orderedWidgets.toMutableList()
+                                    val tmp = newList[currentIdx]
+                                    newList[currentIdx] = newList[currentIdx + 1]
+                                    newList[currentIdx + 1] = tmp
+                                    onReorder(newList)
+                                    draggedIndex = currentIdx + 1
+                                    dragOffsetY = 0f
+                                }
+                                dragOffsetY < -halfCard && currentIdx > 0 -> {
+                                    val newList = orderedWidgets.toMutableList()
+                                    val tmp = newList[currentIdx]
+                                    newList[currentIdx] = newList[currentIdx - 1]
+                                    newList[currentIdx - 1] = tmp
+                                    onReorder(newList)
+                                    draggedIndex = currentIdx - 1
+                                    dragOffsetY = 0f
+                                }
+                            }
+                        }
+                    )
+                },
             colors = CardDefaults.cardColors(containerColor = LuxCardGray.copy(alpha = 0.4f)),
-            border = BorderStroke(1.dp, if (visible) LuxGoldChange.copy(alpha = 0.5f) else LuxCardGray),
+            border = BorderStroke(
+                1.dp,
+                when {
+                    isDragged -> LuxGoldChange
+                    visible -> LuxGoldChange.copy(alpha = 0.5f)
+                    else -> LuxCardGray
+                }
+            ),
             shape = RoundedCornerShape(12.dp)
         ) {
             Row(
@@ -536,6 +1284,16 @@ private fun DashboardStep(
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Drag handle
+                Icon(
+                    Icons.Default.DragHandle,
+                    contentDescription = "Drag to reorder",
+                    tint = LuxMuted.copy(alpha = 0.6f),
+                    modifier = Modifier
+                        .size(20.dp)
+                        .padding(end = 4.dp)
+                )
+                Spacer(Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = w.label,
@@ -563,6 +1321,7 @@ private fun DashboardStep(
             }
         }
     }
+
     if (!config.hasAnyVisible) {
         Spacer(Modifier.height(8.dp))
         Text(
@@ -582,10 +1341,15 @@ private fun ReviewStep(
     objective: String,
     mode: String,
     salary: String,
-    payday: String,
+    paydayType: String,
+    paydayText: String,
+    workingDays: String,
+    workingDaysMode: String,
     balance: String,
     buffer: String,
     config: DashboardConfig,
+    accountEntries: List<AccountEntry>,
+    recurringEntries: List<RecurringEntry>,
     onEdit: (Int) -> Unit
 ) {
     StepHeader(
@@ -596,9 +1360,35 @@ private fun ReviewStep(
     ReviewRow(label = "Budget mode", value = mode.replace(" Mode", ""), onEdit = { onEdit(STEP_OBJECTIVE_MODE) })
     ReviewRow(label = "Currency", value = currency, onEdit = { onEdit(STEP_INCOME) })
     ReviewRow(label = "Monthly salary", value = "$currency$salary", onEdit = { onEdit(STEP_INCOME) })
-    ReviewRow(label = "Payday", value = "Day $payday", onEdit = { onEdit(STEP_INCOME) })
+
+    // Human-readable payday
+    val paydayDisplay = when (paydayType) {
+        "last_day" -> "Last day of month"
+        "last_working" -> {
+            val wdLabel = when (workingDaysMode) {
+                "mon_fri" -> "Mon – Fri"
+                "mon_sat" -> "Mon – Sat"
+                else -> workingDays
+            }
+            "Last working day ($wdLabel)"
+        }
+        else -> "Day $paydayText"
+    }
+    ReviewRow(label = "Payday", value = paydayDisplay, onEdit = { onEdit(STEP_INCOME) })
     ReviewRow(label = "Opening balance", value = "$currency$balance", onEdit = { onEdit(STEP_FOUNDATION) })
     ReviewRow(label = "Safety buffer", value = "$currency$buffer", onEdit = { onEdit(STEP_FOUNDATION) })
+
+    // Accounts summary
+    val primaryAccount = accountEntries.firstOrNull { it.isPrimary }?.name ?: "None"
+    val accountsDisplay = if (accountEntries.isEmpty()) "None added (can add from home)"
+    else "${accountEntries.size} account${if (accountEntries.size != 1) "s" else ""} · Primary: $primaryAccount"
+    ReviewRow(label = "Bank accounts", value = accountsDisplay, onEdit = { onEdit(STEP_ACCOUNTS) })
+
+    // Recurring summary
+    val recurringDisplay = if (recurringEntries.isEmpty()) "None added"
+    else "${recurringEntries.size} item${if (recurringEntries.size != 1) "s" else ""}"
+    ReviewRow(label = "Recurring items", value = recurringDisplay, onEdit = { onEdit(STEP_RECURRING) })
+
     val visibleCount = WidgetId.values().count { config.isVisible(it) }
     ReviewRow(
         label = "Dashboard widgets",
@@ -757,6 +1547,7 @@ private fun InfoTip(text: String) {
 private fun BottomBar(
     step: Int,
     ctaEnabled: Boolean,
+    recurringEmpty: Boolean,
     onBack: () -> Unit,
     onNext: () -> Unit,
     onCommit: () -> Unit
@@ -796,10 +1587,15 @@ private fun BottomBar(
                 .weight(if (step == 0) 1f else 2f)
                 .testTag("onboarding_cta")
         ) {
-            val (label, icon) = when (step) {
-                STEP_WELCOME -> "Get Started" to Icons.Default.ArrowForward
-                STEP_REVIEW -> "Initialize Console" to Icons.Default.CheckCircle
-                else -> "Continue" to Icons.Default.ArrowForward
+            val label = when (step) {
+                STEP_WELCOME -> "Get Started"
+                STEP_REVIEW -> "Initialize Console"
+                STEP_RECURRING -> if (recurringEmpty) "Skip" else "Continue"
+                else -> "Continue"
+            }
+            val icon = when (step) {
+                STEP_REVIEW -> Icons.Default.CheckCircle
+                else -> Icons.Default.ArrowForward
             }
             Text(label, fontWeight = FontWeight.Bold, fontSize = 13.sp)
             Spacer(Modifier.width(6.dp))
