@@ -88,10 +88,13 @@ data class WishlistItem(
     val estimatedPrice: Double,
     /** Target months from now to purchase */
     val targetMonths: Int,
-    /** Derived: estimatedPrice / (targetMonths * 30) — daily amount to set aside */
     val dailyAllocation: Double = 0.0,
     val isPurchased: Boolean = false,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    /** Priority rank: 1 = current (counted in daily budget), 2+ = queued */
+    val priority: Int = 1,
+    /** Amount already saved/accumulated toward this item (including rollover) */
+    val savedAmount: Double = 0.0
 )
 
 @Entity(tableName = "debts")

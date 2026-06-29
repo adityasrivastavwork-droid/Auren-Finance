@@ -1,0 +1,872 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Auren Money OS — UI Preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --lux-black:#0D0B12;
+    --lux-dark-gray:#1A1424;
+    --lux-card-gray:#241E30;
+    --lux-gold:#D0BCFF;
+    --lux-gold-light:#4F378B;
+    --lux-ivory:#E6E1E5;
+    --lux-muted:#938F99;
+    --lux-error:#F2B8B5;
+    --lux-green:#81C784;
+    --lux-ice:#4FC3F7;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#000;color:var(--lux-ivory);font-family:'Inter',sans-serif;-webkit-font-smoothing:antialiased}
+  body{display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:24px 16px 80px}
+
+  .page-header{width:100%;max-width:1200px;display:flex;justify-content:space-between;align-items:center;padding:12px 16px;color:var(--lux-muted);font-size:12px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:16px}
+  .page-header .brand{color:var(--lux-gold);font-family:'Cormorant Garamond',serif;font-size:18px;letter-spacing:.3em}
+  .tabs{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:24px}
+  .tab-btn{background:var(--lux-dark-gray);color:var(--lux-ivory);border:1px solid rgba(208,188,255,.2);padding:8px 16px;border-radius:14px;cursor:pointer;font-size:12px;letter-spacing:.1em;text-transform:uppercase;transition:all .2s}
+  .tab-btn:hover{border-color:var(--lux-gold)}
+  .tab-btn.active{background:var(--lux-gold);color:var(--lux-black);font-weight:600;border-color:var(--lux-gold)}
+
+  .phone-frame{
+    width:412px;max-width:100%;
+    min-height:880px;
+    background:var(--lux-black);
+    border-radius:48px;
+    border:8px solid #111;
+    box-shadow:0 30px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(208,188,255,.08);
+    overflow:hidden;
+    position:relative;
+    display:flex;flex-direction:column;
+  }
+  .notch{height:24px;background:#0a0a0a;display:flex;justify-content:center;align-items:flex-end;padding-bottom:4px}
+  .notch::before{content:"";width:90px;height:6px;background:#000;border-radius:3px}
+  .status-bar{display:flex;justify-content:space-between;align-items:center;padding:8px 24px;font-size:11px;color:var(--lux-muted)}
+
+  .screen{flex:1;overflow-y:auto;padding:0 16px 96px;display:none}
+  .screen.active{display:block}
+
+  /* Header / brand */
+  .top-card{background:rgba(26,20,36,.6);border:1px solid rgba(208,188,255,.2);border-radius:20px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;margin:8px 0 16px}
+  .top-card .menu{display:flex;align-items:center;gap:10px}
+  .icon-btn{background:transparent;border:none;color:var(--lux-gold);cursor:pointer;font-size:22px;padding:4px;line-height:1}
+  .secure-row{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--lux-green);letter-spacing:.1em}
+  .secure-dot{width:8px;height:8px;border-radius:50%;background:var(--lux-green)}
+  .brand-title{font-family:'Cormorant Garamond',serif;font-size:20px;font-weight:700;color:var(--lux-ivory);letter-spacing:.04em}
+
+  /* Safe to spend card */
+  .sts-card{
+    background:linear-gradient(160deg,var(--lux-gold-light) 0%,#3a2a73 100%);
+    border:1px solid rgba(202,196,208,.4);
+    border-radius:28px;
+    padding:24px;
+    text-align:center;
+    position:relative;overflow:hidden;
+  }
+  .sts-badge{width:64px;height:64px;border-radius:16px;background:var(--lux-black);border:1px solid rgba(208,188,255,.4);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-family:'Cormorant Garamond',serif;color:var(--lux-gold);font-size:32px;font-weight:700}
+  .sts-label{font-size:11px;color:var(--lux-ivory);letter-spacing:.2em;font-weight:500}
+  .sts-value{font-size:48px;font-weight:700;color:var(--lux-ivory);margin:6px 0 16px;font-family:'Cormorant Garamond',serif;letter-spacing:-.01em}
+  .sts-divider{height:1px;background:var(--lux-card-gray);margin:8px 0 16px}
+  .sts-row{display:flex;justify-content:space-around;font-size:12px}
+  .sts-row .k{color:var(--lux-muted);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+  .sts-row .v{color:var(--lux-ivory);font-weight:700;margin-top:4px}
+
+  .section-label{font-size:11px;color:var(--lux-gold);letter-spacing:.2em;font-weight:600;margin:24px 0 10px;text-transform:uppercase}
+
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .matrix-card{background:var(--lux-card-gray);border:1px solid rgba(208,188,255,.08);border-radius:18px;padding:16px;transition:transform .15s ease, box-shadow .15s ease}
+  .matrix-card:hover{transform:translateY(-2px);box-shadow:0 4px 24px rgba(208,188,255,.08)}
+  .matrix-icon{width:36px;height:36px;background:var(--lux-gold);border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--lux-black);font-size:18px;font-weight:700}
+  .matrix-label{font-size:10px;color:var(--lux-muted);font-weight:600;letter-spacing:.05em;margin-top:12px}
+  .matrix-value{font-size:18px;font-weight:700;color:var(--lux-ivory);margin-top:2px;font-family:'Cormorant Garamond',serif}
+
+  /* Predictive widget + chart */
+  .widget{background:var(--lux-card-gray);border:1px solid rgba(208,188,255,.08);border-radius:18px;padding:16px;margin-top:24px}
+  .widget h3{margin:0 0 8px;font-size:11px;color:var(--lux-gold);letter-spacing:.2em;text-transform:uppercase;font-weight:600}
+  .widget p{margin:4px 0;color:var(--lux-muted);font-size:13px;line-height:1.5}
+  .progress{height:6px;background:rgba(208,188,255,.1);border-radius:4px;overflow:hidden;margin:10px 0}
+  .progress > span{display:block;height:100%;background:linear-gradient(90deg,var(--lux-gold),#a288ff);border-radius:4px}
+  .chart{display:flex;gap:4px;align-items:flex-end;height:90px;margin-top:10px}
+  .chart .bar{flex:1;background:linear-gradient(180deg,var(--lux-gold) 0%,#5d4490 100%);border-radius:3px 3px 0 0;opacity:.85}
+
+  /* Bills */
+  .bill-row{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+  .bill-row:last-child{border-bottom:none}
+  .bill-row .n{font-weight:500;color:var(--lux-ivory);font-size:14px}
+  .bill-row .meta{color:var(--lux-muted);font-size:11px;margin-top:2px}
+  .bill-row .amt{color:var(--lux-gold);font-weight:600;font-family:'Cormorant Garamond',serif;font-size:16px}
+
+  /* Bottom nav */
+  .bottom-nav{
+    position:sticky;bottom:0;background:rgba(13,11,18,.95);backdrop-filter:blur(20px);
+    border-top:1px solid rgba(208,188,255,.15);
+    display:flex;justify-content:space-around;padding:10px 0 12px;
+    margin:0 -16px;
+  }
+  .nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:10px;color:var(--lux-muted);cursor:pointer;letter-spacing:.05em;text-transform:uppercase;background:transparent;border:none}
+  .nav-item.active{color:var(--lux-gold)}
+  .nav-item .ic{font-size:20px}
+
+  /* FAB */
+  .fab{position:absolute;right:24px;bottom:80px;width:56px;height:56px;border-radius:16px;background:var(--lux-gold);color:var(--lux-black);display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;cursor:pointer;box-shadow:0 8px 24px rgba(208,188,255,.35);border:none}
+
+  /* Auth screen */
+  .auth-wrap{display:flex;flex-direction:column;align-items:center;padding:40px 20px 0;text-align:center}
+  .auth-logo{width:120px;height:120px;border-radius:28px;background:linear-gradient(160deg,var(--lux-gold-light),var(--lux-card-gray));display:flex;align-items:center;justify-content:center;margin-bottom:24px;border:1px solid rgba(208,188,255,.3);font-family:'Cormorant Garamond',serif;color:var(--lux-gold);font-size:64px;font-weight:600}
+  .auth-title{font-family:'Cormorant Garamond',serif;font-size:32px;color:var(--lux-ivory);letter-spacing:.02em}
+  .auth-sub{color:var(--lux-muted);font-size:13px;margin:4px 0 32px;line-height:1.6}
+  .field{width:100%;max-width:340px;display:flex;flex-direction:column;text-align:left;margin-bottom:14px}
+  .field label{font-size:10px;letter-spacing:.18em;color:var(--lux-gold);margin-bottom:6px;text-transform:uppercase}
+  .field input{background:var(--lux-card-gray);border:1px solid rgba(208,188,255,.2);border-radius:14px;color:var(--lux-ivory);padding:14px 16px;font-size:14px;outline:none;font-family:inherit}
+  .field input:focus{border-color:var(--lux-gold)}
+  .btn{width:100%;max-width:340px;padding:14px;background:var(--lux-gold);color:var(--lux-black);border:none;border-radius:14px;font-weight:700;font-size:14px;cursor:pointer;letter-spacing:.1em;text-transform:uppercase;margin-top:8px}
+  .btn.secondary{background:transparent;color:var(--lux-gold);border:1px solid rgba(208,188,255,.4);margin-top:10px}
+  .auth-foot{margin-top:auto;padding:24px 0;font-size:11px;color:var(--lux-muted)}
+
+  /* Insights */
+  .insight{background:var(--lux-card-gray);border:1px solid rgba(208,188,255,.08);border-radius:16px;padding:14px;margin-bottom:10px;font-size:13px;color:var(--lux-ivory);line-height:1.5}
+  .insight b{color:var(--lux-gold)}
+
+  /* Coach chat */
+  .chat{display:flex;flex-direction:column;gap:10px;padding:8px 0}
+  .msg{padding:12px 14px;border-radius:14px;font-size:13px;line-height:1.5;max-width:80%}
+  .msg.bot{background:var(--lux-card-gray);align-self:flex-start;border:1px solid rgba(208,188,255,.1);color:var(--lux-ivory)}
+  .msg.user{background:var(--lux-gold);color:var(--lux-black);align-self:flex-end;font-weight:500}
+  .chat-input{display:flex;gap:8px;margin-top:12px}
+  .chat-input input{flex:1;background:var(--lux-card-gray);border:1px solid rgba(208,188,255,.2);border-radius:14px;color:var(--lux-ivory);padding:12px 14px;font-size:13px;outline:none}
+  .chat-input button{background:var(--lux-gold);color:var(--lux-black);border:none;border-radius:14px;padding:0 18px;font-weight:600;cursor:pointer}
+
+  /* Transactions */
+  .tx-row{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+  .tx-row .cat{font-size:11px;color:var(--lux-muted);letter-spacing:.05em;text-transform:uppercase;margin-top:2px}
+  .tx-amt.pos{color:var(--lux-green);font-weight:600;font-family:'Cormorant Garamond',serif;font-size:16px}
+  .tx-amt.neg{color:var(--lux-error);font-weight:600;font-family:'Cormorant Garamond',serif;font-size:16px}
+
+  /* Issues table on right side */
+  @media (min-width:1100px){
+    body{flex-direction:row;align-items:flex-start;justify-content:center;gap:32px;padding:32px}
+    .meta-col{max-width:520px}
+  }
+  .meta-col h2{font-family:'Cormorant Garamond',serif;color:var(--lux-gold);font-size:24px;margin:4px 0 12px}
+  .meta-col p{color:var(--lux-muted);font-size:13px;line-height:1.6}
+  table{width:100%;border-collapse:collapse;margin-top:12px;font-size:12px;background:var(--lux-card-gray);border-radius:12px;overflow:hidden}
+  th,td{padding:10px 12px;text-align:left;vertical-align:top;border-bottom:1px solid rgba(255,255,255,.06)}
+  th{background:var(--lux-dark-gray);color:var(--lux-gold);font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+  td.sev{font-weight:600}
+  .sev-critical{color:#ff6b6b}
+  .sev-high{color:#ffa94d}
+  .sev-med{color:#ffd43b}
+  .sev-low{color:#74c0fc}
+
+  /* logo SVG container */
+  .auren-logo{font-family:'Cormorant Garamond',serif;color:var(--lux-gold);font-size:42px;font-weight:600}
+
+  /* Sidebar (list → detail) */
+  .sb-scrim{position:absolute;inset:0;background:rgba(0,0,0,.55);z-index:50}
+  .sb-drawer{position:absolute;top:0;left:0;bottom:0;width:86%;background:var(--lux-dark-gray);
+    border-right:1px solid rgba(208,188,255,.18);z-index:51;display:flex;flex-direction:column;
+    box-shadow:0 0 40px rgba(0,0,0,.5);overflow:hidden}
+  .sb-header{display:flex;justify-content:space-between;align-items:center;padding:14px 12px;border-bottom:1px solid rgba(255,255,255,.06)}
+  .sb-header-l{display:flex;align-items:center;gap:10px}
+  .sb-monogram{width:28px;height:28px;border-radius:8px;background:var(--lux-gold-light);color:var(--lux-gold);display:flex;align-items:center;justify-content:center;font-family:'Cormorant Garamond',serif;font-weight:700;font-size:16px}
+  .sb-title{color:var(--lux-ivory);font-weight:600;font-size:16px}
+  .sb-body{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px}
+  .sb-identity{background:var(--lux-card-gray);border:1px solid rgba(208,188,255,.18);border-radius:14px;padding:14px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:transform .15s}
+  .sb-identity:hover{transform:translateY(-1px)}
+  .sb-avatar{width:44px;height:44px;border-radius:50%;background:var(--lux-gold);color:var(--lux-black);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px}
+  .sb-identity-text{flex:1;min-width:0}
+  .sb-email{color:var(--lux-ivory);font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sb-sub{color:var(--lux-muted);font-size:11px;display:flex;align-items:center;gap:6px;margin-top:2px}
+  .sb-sub::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--lux-green)}
+  .sb-section{color:var(--lux-gold);font-size:10px;letter-spacing:.2em;font-weight:600;text-transform:uppercase;margin:8px 4px 2px}
+  .sb-row{background:rgba(36,30,48,.4);border-radius:12px;padding:14px;display:flex;align-items:center;gap:14px;cursor:pointer;transition:background .15s}
+  .sb-row:hover{background:rgba(36,30,48,.7)}
+  .sb-row-icon{width:32px;height:32px;border-radius:8px;background:rgba(208,188,255,.12);color:var(--lux-gold);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+  .sb-row-icon.destructive{background:rgba(242,184,181,.12);color:var(--lux-error)}
+  .sb-row-label{flex:1;color:var(--lux-ivory);font-size:14px;font-weight:500}
+  .sb-row-label.destructive{color:var(--lux-error)}
+  .sb-row-value{color:var(--lux-muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px}
+  .sb-row-chev{color:rgba(147,143,153,.7);font-size:18px;flex-shrink:0}
+  .sb-version{text-align:center;color:rgba(147,143,153,.6);font-size:10px;margin-top:8px}
+
+  /* Onboarding */
+  .ob-screen{display:flex;flex-direction:column;height:100%}
+  .ob-progress{display:flex;gap:6px;padding:16px 24px 8px}
+  .ob-progress > span{flex:1;height:3px;border-radius:2px;background:var(--lux-card-gray)}
+  .ob-progress > span.done{background:var(--lux-gold)}
+  .ob-body{flex:1;overflow-y:auto;padding:0 24px 16px}
+  .ob-title{color:var(--lux-ivory);font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:700;margin-top:8px}
+  .ob-sub{color:var(--lux-muted);font-size:13px;line-height:1.5;margin-top:4px}
+  .ob-section{color:var(--lux-gold);font-size:10px;letter-spacing:.2em;font-weight:600;text-transform:uppercase;margin:24px 2px 8px}
+  .ob-card{background:rgba(36,30,48,.4);border:1px solid var(--lux-card-gray);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;margin-bottom:8px;cursor:pointer;transition:all .15s}
+  .ob-card:hover{border-color:rgba(208,188,255,.3)}
+  .ob-card.selected{background:var(--lux-gold);border-color:var(--lux-gold)}
+  .ob-card-text{flex:1}
+  .ob-card-label{font-size:14px;font-weight:600;color:var(--lux-ivory)}
+  .ob-card.selected .ob-card-label{color:var(--lux-black)}
+  .ob-card-desc{font-size:11px;color:var(--lux-muted);margin-top:2px;line-height:14px}
+  .ob-card.selected .ob-card-desc{color:rgba(13,11,18,.75)}
+  .ob-check{width:22px;height:22px;border-radius:50%;background:var(--lux-black);color:var(--lux-gold);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px}
+  .ob-currency-row{display:flex;gap:8px;margin-top:8px}
+  .ob-currency-pill{flex:1;height:48px;border-radius:10px;background:var(--lux-card-gray);border:1px solid rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;font-weight:700;color:var(--lux-ivory);cursor:pointer}
+  .ob-currency-pill.selected{background:var(--lux-gold);color:var(--lux-black);border-color:var(--lux-gold)}
+  .ob-input{background:transparent;border:1px solid var(--lux-card-gray);border-radius:12px;padding:14px 16px;color:var(--lux-ivory);font-size:18px;font-weight:600;font-family:inherit;width:100%;outline:none;display:flex;align-items:center;gap:8px;margin-top:8px}
+  .ob-input:focus-within{border-color:var(--lux-gold)}
+  .ob-input input{background:transparent;border:none;outline:none;color:var(--lux-ivory);font-size:18px;font-weight:600;flex:1;font-family:inherit;width:100%}
+  .ob-tip{color:var(--lux-muted);font-size:11px;line-height:16px;margin-top:8px;padding:0 2px}
+  .ob-toggle-row{background:rgba(36,30,48,.4);border:1px solid var(--lux-card-gray);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:12px;margin-bottom:6px}
+  .ob-toggle-row.on{border-color:rgba(208,188,255,.5)}
+  .ob-toggle-text{flex:1}
+  .ob-toggle-label{font-size:14px;font-weight:600;color:var(--lux-ivory)}
+  .ob-toggle-desc{font-size:11px;color:var(--lux-muted);line-height:14px}
+  .ob-switch{width:36px;height:20px;border-radius:10px;background:var(--lux-card-gray);position:relative;cursor:pointer;transition:background .15s;flex-shrink:0}
+  .ob-switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--lux-muted);transition:all .2s}
+  .ob-switch.on{background:var(--lux-gold-light)}
+  .ob-switch.on::after{left:18px;background:var(--lux-gold)}
+  .ob-review-row{background:rgba(36,30,48,.4);border:1px solid var(--lux-card-gray);border-radius:12px;padding:12px 14px;display:flex;align-items:center;margin-bottom:6px;cursor:pointer}
+  .ob-review-text{flex:1}
+  .ob-review-label{font-size:10px;letter-spacing:1.5px;color:var(--lux-muted);text-transform:uppercase}
+  .ob-review-value{font-size:14px;font-weight:600;color:var(--lux-ivory);margin-top:2px}
+  .ob-review-edit{color:rgba(208,188,255,.7);font-size:14px}
+  .ob-bottom{background:var(--lux-dark-gray);padding:16px 24px;display:flex;gap:12px}
+  .ob-btn{flex:2;height:46px;border-radius:12px;border:none;background:var(--lux-gold);color:var(--lux-black);font-weight:700;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;letter-spacing:.5px}
+  .ob-btn:disabled{opacity:.4;cursor:not-allowed}
+  .ob-btn-back{flex:1;height:46px;border-radius:12px;background:transparent;border:1px solid rgba(208,188,255,.5);color:var(--lux-gold);font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px}
+  .ob-step-tabs{display:flex;gap:4px;padding:8px 24px;background:rgba(0,0,0,.3)}
+  .ob-step-tab{flex:1;padding:6px 4px;background:rgba(36,30,48,.4);border:none;border-radius:6px;color:var(--lux-muted);font-size:9px;font-weight:600;letter-spacing:.5px;cursor:pointer;text-transform:uppercase}
+  .ob-step-tab.active{background:var(--lux-gold);color:var(--lux-black)}
+  .ob-welcome-logo{width:120px;height:120px;border-radius:28px;background:linear-gradient(160deg,var(--lux-gold-light),var(--lux-card-gray));display:flex;align-items:center;justify-content:center;margin:32px auto 24px;border:1px solid rgba(208,188,255,.3);font-family:'Cormorant Garamond',serif;color:var(--lux-gold);font-size:64px;font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="phone-col">
+  <div class="page-header">
+    <span class="brand">Auren Money OS</span>
+    <span>Web Preview · Compose UI mirror</span>
+  </div>
+
+  <div class="tabs">
+    <button class="tab-btn" data-screen="auth">Auth</button>
+    <button class="tab-btn" data-screen="onboarding">Onboarding</button>
+    <button class="tab-btn active" data-screen="home">Home</button>
+    <button class="tab-btn" data-screen="transactions">Transactions</button>
+    <button class="tab-btn" data-screen="plan">Plan</button>
+    <button class="tab-btn" data-screen="insights">Insights</button>
+    <button class="tab-btn" data-screen="coach">Coach</button>
+    <button class="tab-btn" data-screen="sidebar">Sidebar ☰</button>
+  </div>
+
+  <div class="phone-frame">
+    <div class="notch"></div>
+    <div class="status-bar"><span>9:41</span><span>● ● ●</span></div>
+
+    <!-- ONBOARDING -->
+    <div class="screen" id="screen-onboarding" style="padding:0">
+      <!-- Step picker (preview only — to walk through screens) -->
+      <div class="ob-step-tabs">
+        <button class="ob-step-tab active" data-ob="0">1·Welcome</button>
+        <button class="ob-step-tab" data-ob="1">2·Goals</button>
+        <button class="ob-step-tab" data-ob="2">3·Income</button>
+        <button class="ob-step-tab" data-ob="3">4·Foundation</button>
+        <button class="ob-step-tab" data-ob="4">5·Dashboard</button>
+        <button class="ob-step-tab" data-ob="5">6·Review</button>
+      </div>
+
+      <div class="ob-screen">
+        <div class="ob-progress" id="ob-progress">
+          <span class="done"></span><span></span><span></span><span></span><span></span><span></span>
+        </div>
+
+        <div class="ob-body">
+          <!-- Step 0: Welcome -->
+          <div class="ob-step" data-step="0">
+            <div class="ob-welcome-logo">Æ</div>
+            <div style="text-align:center">
+              <div style="color:var(--lux-gold);letter-spacing:6px;font-size:14px;font-weight:600">AUREN</div>
+              <div style="color:var(--lux-ivory);font-size:36px;font-weight:700;font-family:'Cormorant Garamond',serif">Money OS</div>
+              <p style="color:var(--lux-muted);margin-top:24px;font-size:14px">Your private wealth command centre.</p>
+              <p style="color:rgba(147,143,153,.7);margin-top:6px;font-size:12px">We'll set up your finances in 5 quick steps.<br/>Every choice can be changed later from Settings.</p>
+            </div>
+          </div>
+
+          <!-- Step 1: Objective + Mode -->
+          <div class="ob-step" data-step="1" style="display:none">
+            <div class="ob-title">What are we building?</div>
+            <div class="ob-sub">Your main objective and the discipline mode that fits your life.</div>
+            <div class="ob-section">Primary objective</div>
+            <div class="ob-card selected">
+              <div class="ob-card-text">
+                <div class="ob-card-label">Control spending</div>
+                <div class="ob-card-desc">Stay under a daily Safe-to-Spend limit.</div>
+              </div>
+              <div class="ob-check">✓</div>
+            </div>
+            <div class="ob-card">
+              <div class="ob-card-text">
+                <div class="ob-card-label">Start saving</div>
+                <div class="ob-card-desc">Build a habit of moving money into goals every payday.</div>
+              </div>
+            </div>
+            <div class="ob-card">
+              <div class="ob-card-text">
+                <div class="ob-card-label">Clear debt</div>
+                <div class="ob-card-desc">Prioritize EMI / credit-card payoff with the snowball method.</div>
+              </div>
+            </div>
+            <div class="ob-card">
+              <div class="ob-card-text">
+                <div class="ob-card-label">Build emergency fund</div>
+                <div class="ob-card-desc">Lock away 3–6 months of expenses for safety.</div>
+              </div>
+            </div>
+
+            <div class="ob-section">Budget mode</div>
+            <div class="ob-card selected">
+              <div class="ob-card-text">
+                <div class="ob-card-label">Strict</div>
+                <div class="ob-card-desc">Hardest. Bills + buffer reserved first; Safe-to-Spend stays low to enforce discipline.</div>
+              </div>
+              <div class="ob-check">✓</div>
+            </div>
+            <div class="ob-card">
+              <div class="ob-card-text">
+                <div class="ob-card-label">Balanced</div>
+                <div class="ob-card-desc">Default. Spend down to a calculated daily figure while essentials stay protected.</div>
+              </div>
+            </div>
+            <div class="ob-card">
+              <div class="ob-card-text">
+                <div class="ob-card-label">Relaxed</div>
+                <div class="ob-card-desc">Most flexible. Useful when income or expenses vary widely month to month.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Step 2: Income -->
+          <div class="ob-step" data-step="2" style="display:none">
+            <div class="ob-title">Income rails</div>
+            <div class="ob-sub">How much you earn and when it lands.</div>
+            <div class="ob-section">Currency</div>
+            <div class="ob-currency-row">
+              <div class="ob-currency-pill selected">₹</div>
+              <div class="ob-currency-pill">$</div>
+              <div class="ob-currency-pill">€</div>
+              <div class="ob-currency-pill">£</div>
+              <div class="ob-currency-pill">¥</div>
+            </div>
+            <div class="ob-section">Monthly take-home</div>
+            <label class="ob-input"><span style="color:var(--lux-gold);font-weight:700">₹</span><input value="60000" type="text"/></label>
+            <div class="ob-section">Payday (day of month)</div>
+            <label class="ob-input"><input value="1" type="text"/></label>
+            <div class="ob-tip">Auren will refresh your Safe-to-Spend limit on this day each month. For months without this date, we use the last day.</div>
+          </div>
+
+          <!-- Step 3: Foundation -->
+          <div class="ob-step" data-step="3" style="display:none">
+            <div class="ob-title">Where you stand</div>
+            <div class="ob-sub">Starting balance and the safety reserve to defend.</div>
+            <div class="ob-section">Opening balance</div>
+            <label class="ob-input"><span style="color:var(--lux-gold);font-weight:700">₹</span><input value="25000" type="text"/></label>
+            <div class="ob-tip">Cash sitting in your main account today. We'll create a Primary Bank Account with this balance.</div>
+            <div class="ob-section">Safety buffer</div>
+            <label class="ob-input"><span style="color:var(--lux-gold);font-weight:700">₹</span><input value="2000" type="text"/></label>
+            <div class="ob-tip">Money set aside on every cycle and excluded from Safe-to-Spend — a final cushion against overshooting.</div>
+          </div>
+
+          <!-- Step 4: Dashboard -->
+          <div class="ob-step" data-step="4" style="display:none">
+            <div class="ob-title">Tune your dashboard</div>
+            <div class="ob-sub">Switch widgets on or off. You can change this anytime from Settings.</div>
+            <div style="height:8px"></div>
+            <div class="ob-toggle-row on">
+              <div class="ob-toggle-text"><div class="ob-toggle-label">Monetary Matrix</div><div class="ob-toggle-desc">Salary · Bills · Locked Savings · Safety Reserve 2×2 grid</div></div>
+              <div class="ob-switch on"></div>
+            </div>
+            <div class="ob-toggle-row on">
+              <div class="ob-toggle-text"><div class="ob-toggle-label">Predictive end-of-month</div><div class="ob-toggle-desc">Forecast of where your savings will land at payday</div></div>
+              <div class="ob-switch on"></div>
+            </div>
+            <div class="ob-toggle-row on">
+              <div class="ob-toggle-text"><div class="ob-toggle-label">30-day spending trends</div><div class="ob-toggle-desc">Interactive line chart of daily spend</div></div>
+              <div class="ob-switch on"></div>
+            </div>
+            <div class="ob-toggle-row">
+              <div class="ob-toggle-text"><div class="ob-toggle-label">Spending vs savings</div><div class="ob-toggle-desc">Geometric breakdown of where your income goes</div></div>
+              <div class="ob-switch"></div>
+            </div>
+            <div class="ob-toggle-row on">
+              <div class="ob-toggle-text"><div class="ob-toggle-label">Weekly check-in</div><div class="ob-toggle-desc">Reflect on last week's wins and overspends</div></div>
+              <div class="ob-switch on"></div>
+            </div>
+            <div class="ob-toggle-row">
+              <div class="ob-toggle-text"><div class="ob-toggle-label">Bank feed sync</div><div class="ob-toggle-desc">Bulk-import bank SMS / CSV transactions</div></div>
+              <div class="ob-switch"></div>
+            </div>
+            <div class="ob-toggle-row on">
+              <div class="ob-toggle-text"><div class="ob-toggle-label">Protected bills</div><div class="ob-toggle-desc">Upcoming bills and subscriptions queued for the cycle</div></div>
+              <div class="ob-switch on"></div>
+            </div>
+          </div>
+
+          <!-- Step 5: Review -->
+          <div class="ob-step" data-step="5" style="display:none">
+            <div class="ob-title">Confirm and initialize</div>
+            <div class="ob-sub">Tap any row to edit.</div>
+            <div style="height:12px"></div>
+            <div class="ob-review-row"><div class="ob-review-text"><div class="ob-review-label">Primary objective</div><div class="ob-review-value">Control spending</div></div><span class="ob-review-edit">✎</span></div>
+            <div class="ob-review-row"><div class="ob-review-text"><div class="ob-review-label">Budget mode</div><div class="ob-review-value">Strict</div></div><span class="ob-review-edit">✎</span></div>
+            <div class="ob-review-row"><div class="ob-review-text"><div class="ob-review-label">Currency</div><div class="ob-review-value">₹</div></div><span class="ob-review-edit">✎</span></div>
+            <div class="ob-review-row"><div class="ob-review-text"><div class="ob-review-label">Monthly salary</div><div class="ob-review-value">₹60,000</div></div><span class="ob-review-edit">✎</span></div>
+            <div class="ob-review-row"><div class="ob-review-text"><div class="ob-review-label">Payday</div><div class="ob-review-value">Day 1</div></div><span class="ob-review-edit">✎</span></div>
+            <div class="ob-review-row"><div class="ob-review-text"><div class="ob-review-label">Opening balance</div><div class="ob-review-value">₹25,000</div></div><span class="ob-review-edit">✎</span></div>
+            <div class="ob-review-row"><div class="ob-review-text"><div class="ob-review-label">Safety buffer</div><div class="ob-review-value">₹2,000</div></div><span class="ob-review-edit">✎</span></div>
+            <div class="ob-review-row"><div class="ob-review-text"><div class="ob-review-label">Dashboard widgets</div><div class="ob-review-value">7 of 9 on</div></div><span class="ob-review-edit">✎</span></div>
+          </div>
+        </div>
+
+        <div class="ob-bottom" id="ob-bottom">
+          <button class="ob-btn-back" style="display:none">← Back</button>
+          <button class="ob-btn">Get Started →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- AUTH SCREEN -->
+    <div class="screen" id="screen-auth">
+      <div class="auth-wrap">
+        <div class="auth-logo">Æ</div>
+        <div class="auth-title">Auren Money OS</div>
+        <div class="auth-sub">A private wealth command centre.<br/>Sign in to your encrypted vault.</div>
+
+        <div class="field">
+          <label>Email</label>
+          <input type="email" value="you@example.com" />
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <input type="password" value="••••••••••" />
+        </div>
+
+        <button class="btn">Sign in securely</button>
+        <button class="btn secondary">Continue as Guest</button>
+        <button class="btn secondary">Sign in with Google</button>
+
+        <div class="auth-foot">🔒 Firebase Secure · End-to-end encryption</div>
+      </div>
+    </div>
+
+    <!-- HOME SCREEN -->
+    <div class="screen active" id="screen-home">
+      <div class="top-card">
+        <button class="icon-btn" onclick="document.querySelector('[data-screen=sidebar]').click()">☰</button>
+        <div class="brand-title">Auren Money Hub</div>
+        <div class="secure-dot" title="Firebase secure"></div>
+      </div>
+
+      <div class="sts-card">
+        <div class="sts-badge">Æ</div>
+        <div class="sts-label">SAFE TO SPEND TODAY</div>
+        <div class="sts-value">₹1,243.50</div>
+        <div class="sts-divider"></div>
+        <div class="sts-row">
+          <div><div class="k">Available Buffer</div><div class="v">₹38,200</div></div>
+          <div><div class="k">Tenure Remaining</div><div class="v">17 days left</div></div>
+        </div>
+      </div>
+
+      <div class="section-label">Monetary Matrix</div>
+      <div class="grid-2">
+        <div class="matrix-card">
+          <div class="matrix-icon">↑</div>
+          <div class="matrix-label">MONTHLY SALARY</div>
+          <div class="matrix-value">₹60,000</div>
+        </div>
+        <div class="matrix-card">
+          <div class="matrix-icon">📅</div>
+          <div class="matrix-label">MONTHLY BILLS</div>
+          <div class="matrix-value">₹12,450</div>
+        </div>
+        <div class="matrix-card">
+          <div class="matrix-icon">📈</div>
+          <div class="matrix-label">LOCKED SAVINGS</div>
+          <div class="matrix-value">₹18,500</div>
+        </div>
+        <div class="matrix-card">
+          <div class="matrix-icon">🛡</div>
+          <div class="matrix-label">SAFETY RESERVE</div>
+          <div class="matrix-value">₹2,000</div>
+        </div>
+      </div>
+
+      <div class="widget">
+        <h3>Predictive End-of-Month Savings</h3>
+        <p>Projected to save <b style="color:var(--lux-gold)">₹8,420</b> by month-end at current pace.</p>
+        <div class="progress"><span style="width:62%"></span></div>
+        <p style="font-size:11px">62% of monthly target reached</p>
+      </div>
+
+      <div class="widget">
+        <h3>30-Day Spending Trends</h3>
+        <div class="chart">
+          <div class="bar" style="height:30%"></div>
+          <div class="bar" style="height:55%"></div>
+          <div class="bar" style="height:42%"></div>
+          <div class="bar" style="height:70%"></div>
+          <div class="bar" style="height:65%"></div>
+          <div class="bar" style="height:48%"></div>
+          <div class="bar" style="height:80%"></div>
+          <div class="bar" style="height:45%"></div>
+          <div class="bar" style="height:60%"></div>
+          <div class="bar" style="height:75%"></div>
+          <div class="bar" style="height:52%"></div>
+          <div class="bar" style="height:68%"></div>
+        </div>
+      </div>
+
+      <div class="widget">
+        <h3>Protected Bills</h3>
+        <div class="bill-row">
+          <div><div class="n">Electricity</div><div class="meta">Utilities · Due 15</div></div>
+          <div class="amt">₹2,100</div>
+        </div>
+        <div class="bill-row">
+          <div><div class="n">Netflix</div><div class="meta">Subscriptions · Due 5</div></div>
+          <div class="amt">₹649</div>
+        </div>
+        <div class="bill-row">
+          <div><div class="n">Home Rent</div><div class="meta">Essentials · Due 1</div></div>
+          <div class="amt">₹9,700</div>
+        </div>
+      </div>
+
+      <button class="fab" title="Add transaction">＋</button>
+
+      <div class="bottom-nav">
+        <button class="nav-item active" data-screen="home"><span class="ic">⌂</span>Home</button>
+        <button class="nav-item" data-screen="transactions"><span class="ic">≡</span>Ledger</button>
+        <button class="nav-item" data-screen="plan"><span class="ic">◇</span>Plan</button>
+        <button class="nav-item" data-screen="insights"><span class="ic">✦</span>Insights</button>
+        <button class="nav-item" data-screen="coach"><span class="ic">✦</span>Coach</button>
+      </div>
+    </div>
+
+    <!-- TRANSACTIONS -->
+    <div class="screen" id="screen-transactions">
+      <div class="top-card">
+        <div class="menu"><button class="icon-btn">☰</button><div class="brand-title">Ledger</div></div>
+        <button class="icon-btn">🔍</button>
+      </div>
+      <div class="section-label">This Month</div>
+      <div class="widget" style="margin-top:0">
+        <div class="tx-row"><div><div>Swiggy</div><div class="cat">Dining</div></div><div class="tx-amt neg">-₹485</div></div>
+        <div class="tx-row"><div><div>Salary</div><div class="cat">Income</div></div><div class="tx-amt pos">+₹60,000</div></div>
+        <div class="tx-row"><div><div>Amazon</div><div class="cat">Shopping</div></div><div class="tx-amt neg">-₹2,199</div></div>
+        <div class="tx-row"><div><div>Uber</div><div class="cat">Transport</div></div><div class="tx-amt neg">-₹312</div></div>
+        <div class="tx-row"><div><div>Electricity bill</div><div class="cat">Utilities</div></div><div class="tx-amt neg">-₹2,100</div></div>
+        <div class="tx-row"><div><div>Goal: Vacation</div><div class="cat">Savings</div></div><div class="tx-amt pos">+₹3,000</div></div>
+      </div>
+      <button class="fab">＋</button>
+      <div class="bottom-nav">
+        <button class="nav-item" data-screen="home"><span class="ic">⌂</span>Home</button>
+        <button class="nav-item active" data-screen="transactions"><span class="ic">≡</span>Ledger</button>
+        <button class="nav-item" data-screen="plan"><span class="ic">◇</span>Plan</button>
+        <button class="nav-item" data-screen="insights"><span class="ic">✦</span>Insights</button>
+        <button class="nav-item" data-screen="coach"><span class="ic">✦</span>Coach</button>
+      </div>
+    </div>
+
+    <!-- PLAN -->
+    <div class="screen" id="screen-plan">
+      <div class="top-card">
+        <div class="menu"><button class="icon-btn">☰</button><div class="brand-title">Plan</div></div>
+      </div>
+      <div class="section-label">Goals</div>
+      <div class="widget" style="margin-top:0">
+        <h3>Emergency Fund</h3>
+        <p>₹45,000 / ₹100,000</p>
+        <div class="progress"><span style="width:45%"></span></div>
+      </div>
+      <div class="widget">
+        <h3>Tokyo Trip</h3>
+        <p>₹18,500 / ₹150,000</p>
+        <div class="progress"><span style="width:12%"></span></div>
+      </div>
+      <div class="section-label">Debts</div>
+      <div class="widget" style="margin-top:0">
+        <h3>Personal Loan · HDFC</h3>
+        <p>Outstanding: <b style="color:var(--lux-gold)">₹212,000</b> · EMI ₹8,400/mo · 26 months left</p>
+      </div>
+      <div class="bottom-nav">
+        <button class="nav-item" data-screen="home"><span class="ic">⌂</span>Home</button>
+        <button class="nav-item" data-screen="transactions"><span class="ic">≡</span>Ledger</button>
+        <button class="nav-item active" data-screen="plan"><span class="ic">◇</span>Plan</button>
+        <button class="nav-item" data-screen="insights"><span class="ic">✦</span>Insights</button>
+        <button class="nav-item" data-screen="coach"><span class="ic">✦</span>Coach</button>
+      </div>
+    </div>
+
+    <!-- INSIGHTS -->
+    <div class="screen" id="screen-insights">
+      <div class="top-card">
+        <div class="menu"><button class="icon-btn">☰</button><div class="brand-title">Insights</div></div>
+      </div>
+      <div class="section-label">AI Audit · Top directives</div>
+      <div class="insight">• <b>Optimize Dining spend</b>: Dining outlays of <b>₹4,820</b> are an immediate friction point. Trim by 15% to reinforce the safety buffer.</div>
+      <div class="insight">• <b>Rationalize Discretionary Shopping</b>: Shopping reached <b>₹7,250</b>. A weekly cap of ₹3,625 secures immediate cushions.</div>
+      <div class="insight">• <b>Establish Direct Separation</b>: Automate savings rate first — divert a fixed percentage of salary to goals at payday.</div>
+      <div class="bottom-nav">
+        <button class="nav-item" data-screen="home"><span class="ic">⌂</span>Home</button>
+        <button class="nav-item" data-screen="transactions"><span class="ic">≡</span>Ledger</button>
+        <button class="nav-item" data-screen="plan"><span class="ic">◇</span>Plan</button>
+        <button class="nav-item active" data-screen="insights"><span class="ic">✦</span>Insights</button>
+        <button class="nav-item" data-screen="coach"><span class="ic">✦</span>Coach</button>
+      </div>
+    </div>
+
+    <!-- COACH -->
+    <div class="screen" id="screen-coach">
+      <div class="top-card">
+        <div class="menu"><button class="icon-btn">☰</button><div class="brand-title">AI Money Coach</div></div>
+      </div>
+      <div class="chat">
+        <div class="msg bot">Welcome to Auren Money Coach. Ask: "Can I afford a ₹5,000 spend today?"</div>
+        <div class="msg user">What's my safe-to-spend today?</div>
+        <div class="msg bot">Your safe-to-spend today is <b>₹1,243.50</b>. You have 17 days until next payday, with ₹12,450 in protected bills and a ₹2,000 buffer reserved.</div>
+        <div class="msg user">Can I spend ₹5,000 on a dinner?</div>
+        <div class="msg bot">Spending ₹5,000 today would breach your safe-to-spend by ₹3,756 and threaten the upcoming Electricity bill (₹2,100, due in 4 days). Suggest: defer to next payday, or reallocate from Locked Savings consciously.</div>
+      </div>
+      <div class="chat-input">
+        <input placeholder="Ask your money coach…" />
+        <button>↑</button>
+      </div>
+      <div class="bottom-nav">
+        <button class="nav-item" data-screen="home"><span class="ic">⌂</span>Home</button>
+        <button class="nav-item" data-screen="transactions"><span class="ic">≡</span>Ledger</button>
+        <button class="nav-item" data-screen="plan"><span class="ic">◇</span>Plan</button>
+        <button class="nav-item" data-screen="insights"><span class="ic">✦</span>Insights</button>
+        <button class="nav-item active" data-screen="coach"><span class="ic">✦</span>Coach</button>
+      </div>
+    </div>
+    <!-- SIDEBAR (overlays home) -->
+    <div class="screen" id="screen-sidebar" style="padding:0">
+      <!-- Faded home behind -->
+      <div style="position:absolute;inset:0;padding:0 16px 96px;opacity:.35;pointer-events:none">
+        <div class="top-card" style="margin-top:8px">
+          <button class="icon-btn">☰</button>
+          <div class="brand-title">Auren Money Hub</div>
+          <div class="secure-dot"></div>
+        </div>
+        <div class="sts-card"><div class="sts-badge">Æ</div><div class="sts-value">₹1,243.50</div></div>
+      </div>
+
+      <!-- Scrim -->
+      <div class="sb-scrim" onclick="document.querySelector('[data-screen=home]').click()"></div>
+
+      <!-- Drawer -->
+      <div class="sb-drawer">
+        <div class="sb-header">
+          <div class="sb-header-l">
+            <div class="sb-monogram">Æ</div>
+            <div class="sb-title">Settings</div>
+          </div>
+          <button class="icon-btn" style="color:var(--lux-muted)" onclick="document.querySelector('[data-screen=home]').click()">✕</button>
+        </div>
+
+        <div class="sb-body">
+          <div class="sb-identity">
+            <div class="sb-avatar">A</div>
+            <div class="sb-identity-text">
+              <div class="sb-email">aditya@auren.io</div>
+              <div class="sb-sub">Firebase synchronized</div>
+            </div>
+            <span class="sb-row-chev">›</span>
+          </div>
+
+          <div class="sb-section">Vault profile</div>
+          <div class="sb-row"><div class="sb-row-icon">💰</div><div class="sb-row-label">Monthly income</div><div class="sb-row-value">₹60,000</div><span class="sb-row-chev">›</span></div>
+          <div class="sb-row"><div class="sb-row-icon">🛡</div><div class="sb-row-label">Safety buffer</div><div class="sb-row-value">₹2,000</div><span class="sb-row-chev">›</span></div>
+          <div class="sb-row"><div class="sb-row-icon">⇄</div><div class="sb-row-label">Currency</div><div class="sb-row-value">₹</div><span class="sb-row-chev">›</span></div>
+          <div class="sb-row"><div class="sb-row-icon">⚙</div><div class="sb-row-label">Budget mode</div><div class="sb-row-value">Strict</div><span class="sb-row-chev">›</span></div>
+          <div class="sb-row"><div class="sb-row-icon">⚑</div><div class="sb-row-label">Wealth objective</div><div class="sb-row-value">Control spending</div><span class="sb-row-chev">›</span></div>
+
+          <div class="sb-section">Preferences</div>
+          <div class="sb-row"><div class="sb-row-icon">🌐</div><div class="sb-row-label">Language</div><div class="sb-row-value">English</div><span class="sb-row-chev">›</span></div>
+          <div class="sb-row"><div class="sb-row-icon">🌙</div><div class="sb-row-label">Appearance</div><div class="sb-row-value">Dark</div><span class="sb-row-chev">›</span></div>
+
+          <div class="sb-section">Security</div>
+          <div class="sb-row"><div class="sb-row-icon">🔐</div><div class="sb-row-label">Session</div><div class="sb-row-value">Active</div><span class="sb-row-chev">›</span></div>
+          <div class="sb-row"><div class="sb-row-icon destructive">⤴</div><div class="sb-row-label destructive">Sign out</div><span class="sb-row-chev">›</span></div>
+
+          <div class="sb-version">Auren Money OS · v1.0</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="meta-col">
+  <h2>What's not working — fix status</h2>
+  <p>Audit of the cloned <code>Auren-Finance</code> source, with <span style="color:var(--lux-green)">✅ fixed in this session</span> highlighted. Critical issues are <span style="color:#ff6b6b">deliberately untouched</span> per your instruction.</p>
+
+  <table>
+    <thead><tr><th style="width:80px">Severity</th><th>Status</th><th>Area</th><th>Issue</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="sev sev-critical">Critical</td>
+        <td>⏭ skipped</td>
+        <td>AI / Gemini</td>
+        <td>Endpoint hardcoded to <code>gemini-3.5-flash</code> — 404s on production API. Per your instruction, critical items are NOT modified.</td>
+      </tr>
+      <tr>
+        <td class="sev sev-critical">Critical</td>
+        <td>⏭ skipped</td>
+        <td>Security</td>
+        <td>Auth state in plain <code>SharedPreferences</code> — needs EncryptedSharedPreferences.</td>
+      </tr>
+      <tr>
+        <td class="sev sev-critical">Critical</td>
+        <td>⏭ skipped</td>
+        <td>Security</td>
+        <td>Gemini API key passed as <code>?key=</code> query — recoverable from logs / APK.</td>
+      </tr>
+      <tr>
+        <td class="sev sev-high">High</td>
+        <td>⏭ skipped</td>
+        <td>Auth</td>
+        <td>"Firebase auth" is simulated — no real SDK wired. Treated as critical security work; left for you.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-high">High</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Format-string bug</td>
+        <td>Broken <code>"%,.0f2"</code> at <code>FinanceViewModel.kt:457-458</code> + <code>AurenApp.kt:4988</code> — replaced by new <code>MoneyFormat</code> utility (locale-aware Indian grouping). Pinned by tests.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-high">High</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Gradle release</td>
+        <td>Signing config now falls back gracefully when env vars missing; <code>isMinifyEnabled=true</code> + <code>isShrinkResources=true</code> + <code>isCrunchPngs=true</code>.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-high">High</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Data layer</td>
+        <td><code>fallbackToDestructiveMigration</code> removed. Proper <code>MIGRATION_1_2</code> added — ALTERs <code>user_profile</code> + <code>bills</code> instead of wiping user finance data.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-high">High</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Debt matching</td>
+        <td><code>TransactionHeuristics.matchDebt</code> — trims, lowercases, supports substring fallback. Regression test pins behaviour.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-high">High</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Tests</td>
+        <td>Added <code>MoneyFormatTest</code>, <code>TransactionHeuristicsTest</code>, <code>FinanceRepositoryTest</code> covering all changed code paths (per AGENT.md §3).</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-med">Medium</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Auto-save i18n</td>
+        <td><code>TransactionHeuristics.isSalaryLike</code> — matches "salary / vetan / तनख्वाह / tankhwah", trims whitespace.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-med">Medium</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Bulk import</td>
+        <td>New <code>FinanceDao.insertTransactions</code> + <code>FinanceRepository.insertTransactions</code> — one DAO call + one balance sweep instead of N round-trips. <code>importBankTransactions</code> rewired.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-med">Medium</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Animations</td>
+        <td>Tab transition: <code>Crossfade</code> → <code>AnimatedContent</code> with <code>spring(StiffnessMediumLow, DampingRatioLowBouncy)</code> + 12px vertical glide. Premium silky feel.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-med">Medium</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Header declutter</td>
+        <td>HomeScreen header: removed duplicate ⚙ icon, removed "FIREBASE SECURE" pill — replaced with subtle 8dp green dot on the right. Single hamburger anchors the left.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-low">Low</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Currency formatting</td>
+        <td><code>MoneyFormat</code> uses <code>NumberFormat.getNumberInstance(Locale("en","IN"))</code> for ₹ — proper 2-2-3 grouping.</td>
+      </tr>
+      <tr style="background:rgba(129,199,132,.07)">
+        <td class="sev sev-low">Low</td>
+        <td style="color:var(--lux-green)">✅ fixed</td>
+        <td>Backup rules</td>
+        <td><code>android:allowBackup="false"</code> — finance data no longer auto-uploaded to user's Google Drive backup.</td>
+      </tr>
+      <tr>
+        <td class="sev sev-med">Medium</td>
+        <td>⏳ deferred</td>
+        <td>Compose perf</td>
+        <td>9,055-line <code>AurenApp.kt</code> — refactor per screen. Big surgical change; out of scope of this fix sweep.</td>
+      </tr>
+      <tr>
+        <td class="sev sev-med">Medium</td>
+        <td>⏳ deferred</td>
+        <td>i18n state</td>
+        <td>Global <code>langOption</code> not persisted across rotation. Needs to move into <code>UserProfile</code> Room row — coupled to next migration.</td>
+      </tr>
+      <tr>
+        <td class="sev sev-low">Low</td>
+        <td>⏳ deferred</td>
+        <td>README</td>
+        <td>Still references "AI Studio" generic banner. Cosmetic.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p style="margin-top:16px">Generated from a static read of <code>main</code> branch on 2026-06-26. Per AGENT.md the next steps would be: write regression tests for the format-string bug, replace the Gemini model id, swap to <code>EncryptedSharedPreferences</code>, and split <code>AurenApp.kt</code> file-by-screen.</p>
+</div>
+
+<script>
+  const tabs = document.querySelectorAll('[data-screen]');
+  function show(id){
+    document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+    document.getElementById('screen-'+id)?.classList.add('active');
+    document.querySelectorAll('.tabs .tab-btn').forEach(b=>b.classList.toggle('active', b.dataset.screen===id));
+  }
+  tabs.forEach(t=> t.addEventListener('click', e => show(t.dataset.screen)));
+
+  // Onboarding step navigation (preview-only)
+  const obSteps = document.querySelectorAll('.ob-step');
+  const obTabs = document.querySelectorAll('.ob-step-tab');
+  const obProgress = document.querySelectorAll('#ob-progress > span');
+  const obCta = document.querySelector('#ob-bottom .ob-btn');
+  const obBack = document.querySelector('#ob-bottom .ob-btn-back');
+
+  function showOb(i){
+    obSteps.forEach(s => s.style.display = (+s.dataset.step === i ? 'block' : 'none'));
+    obTabs.forEach(t => t.classList.toggle('active', +t.dataset.ob === i));
+    obProgress.forEach((p, idx) => p.classList.toggle('done', idx <= i));
+    obBack.style.display = i === 0 ? 'none' : 'flex';
+    obCta.textContent = i === 0 ? 'Get Started →' : i === 5 ? 'Initialize Console ✓' : 'Continue →';
+  }
+  obTabs.forEach(t => t.addEventListener('click', () => showOb(+t.dataset.ob)));
+  obCta?.addEventListener('click', () => {
+    const cur = [...obTabs].findIndex(t => t.classList.contains('active'));
+    if (cur < 5) showOb(cur + 1);
+    else show('home');
+  });
+  obBack?.addEventListener('click', () => {
+    const cur = [...obTabs].findIndex(t => t.classList.contains('active'));
+    if (cur > 0) showOb(cur - 1);
+  });
+  // Toggle switches in preview
+  document.querySelectorAll('.ob-switch').forEach(s => s.addEventListener('click', e => {
+    s.classList.toggle('on');
+    s.closest('.ob-toggle-row')?.classList.toggle('on');
+  }));
+</script>
+</body>
+</html>

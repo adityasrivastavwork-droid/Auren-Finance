@@ -91,7 +91,9 @@ abstract class AppDatabase : RoomDatabase() {
                         `targetMonths` INTEGER NOT NULL,
                         `dailyAllocation` REAL NOT NULL DEFAULT 0.0,
                         `isPurchased` INTEGER NOT NULL DEFAULT 0,
-                        `createdAt` INTEGER NOT NULL DEFAULT 0
+                        `createdAt` INTEGER NOT NULL DEFAULT 0,
+                        `priority` INTEGER NOT NULL DEFAULT 1,
+                        `savedAmount` REAL NOT NULL DEFAULT 0.0
                     )
                 """.trimIndent())
             }

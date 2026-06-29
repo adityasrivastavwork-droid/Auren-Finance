@@ -2213,13 +2213,12 @@ fun HomeScreen(
 
     var showSideBar by remember { mutableStateOf(false) }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
             val salaryVal = profileState?.salaryAmount ?: 60000.0
             val bufferVal = profileState?.safetyBuffer ?: 2000.0
             val totalBillsVal = bills.sumOf { it.amount }
@@ -2793,7 +2792,6 @@ fun HomeScreen(
                 }
             }
             Spacer(modifier = Modifier.height(120.dp))
-        }
     }
 
     // Old dimming overlay removed
@@ -5070,16 +5068,18 @@ fun GoalsSubView(
 @Composable
 fun WishlistSubView(currency: String, viewModel: FinanceViewModel) {
     val wishlistItems by viewModel.wishlistItems.collectAsStateWithLifecycle()
-    val profile by viewModel.profile.collectAsStateWithLifecycle()
     val dailyBudget by viewModel.safeToSpendToday.collectAsStateWithLifecycle()
 
     var showAddDialog by remember { mutableStateOf(false) }
+    var editingItem by remember { mutableStateOf<WishlistItem?>(null) }
 
-    val totalDailyAllocation = wishlistItems.filter { !it.isPurchased }.sumOf { it.dailyAllocation }
+    val totalDailyAllocation = wishlistItems.filter { !it.isPurchased }.minByOrNull { it.priority }?.dailyAllocation ?: 0.0
+    val activeItems = wishlistItems.filter { !it.isPurchased }.sortedBy { it.priority }
+    val purchasedItems = wishlistItems.filter { it.isPurchased }
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .verticalScroll(rememberScrollState())
     ) {
         // Summary card
@@ -5087,6 +5087,8 @@ fun WishlistSubView(currency: String, viewModel: FinanceViewModel) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Text("PRODUCT PLANNER", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
                 Text("Planned Purchase Tracker", style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Text("Only your #1 priority item is counted toward your daily spend limit. Items below it are queued.", color = LuxMuted, fontSize = 11.sp, lineHeight = 16.sp)
                 Spacer(Modifier.height(12.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
@@ -5116,7 +5118,7 @@ fun WishlistSubView(currency: String, viewModel: FinanceViewModel) {
 
         Spacer(Modifier.height(12.dp))
 
-        if (wishlistItems.isEmpty()) {
+        if (activeItems.isEmpty() && purchasedItems.isEmpty()) {
             CinematicGlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                 Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -5128,49 +5130,114 @@ fun WishlistSubView(currency: String, viewModel: FinanceViewModel) {
                 }
             }
         } else {
-            wishlistItems.forEach { item ->
+            // Active items sorted by priority
+            activeItems.forEachIndexed { listIdx, item ->
+                val isTopPriority = item.priority == activeItems.firstOrNull()?.priority
                 Spacer(Modifier.height(8.dp))
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = if (item.isPurchased) LuxGreen.copy(alpha = 0.08f) else LuxCardGray.copy(alpha = 0.4f)),
-                    border = BorderStroke(1.dp, if (item.isPurchased) LuxGreen.copy(alpha = 0.4f) else LuxGoldChange.copy(alpha = 0.3f)),
+                    colors = CardDefaults.cardColors(containerColor = if (isTopPriority) LuxGoldChange.copy(alpha = 0.08f) else LuxCardGray.copy(alpha = 0.3f)),
+                    border = BorderStroke(1.dp, if (isTopPriority) LuxGoldChange.copy(alpha = 0.6f) else LuxCardGray),
                     shape = RoundedCornerShape(16.dp)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(item.name, color = LuxIvory, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                                Text("$currency${String.format("%,.0f", item.estimatedPrice)} · ${item.targetMonths} month${if (item.targetMonths != 1) "s" else ""}", color = LuxMuted, fontSize = 12.sp)
-                            }
-                            if (!item.isPurchased) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(onClick = { viewModel.markWishlistPurchased(item) }, modifier = Modifier.size(32.dp)) {
-                                        Icon(Icons.Default.CheckCircle, contentDescription = "Mark purchased", tint = LuxGreen, modifier = Modifier.size(20.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                // Priority badge
+                                Box(
+                                    modifier = Modifier.size(24.dp).background(if (isTopPriority) LuxGoldChange else LuxCardGray, RoundedCornerShape(6.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("${listIdx + 1}", color = if (isTopPriority) LuxBlack else LuxMuted, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Column {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(item.name, color = LuxIvory, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                                        if (isTopPriority) {
+                                            Spacer(Modifier.width(6.dp))
+                                            Text("ACTIVE", color = LuxGoldChange, fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.background(LuxGoldChange.copy(alpha = 0.15f), RoundedCornerShape(4.dp)).padding(horizontal = 5.dp, vertical = 2.dp))
+                                        }
                                     }
-                                    IconButton(onClick = { viewModel.deleteWishlistItem(item) }, modifier = Modifier.size(32.dp)) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = LuxError, modifier = Modifier.size(18.dp))
+                                    Text("$currency${String.format("%,.0f", item.estimatedPrice)} · ${item.targetMonths} month${if (item.targetMonths != 1) "s" else ""}", color = LuxMuted, fontSize = 12.sp)
+                                }
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                // Up/down priority controls
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (listIdx > 0) {
+                                        IconButton(onClick = { viewModel.moveWishlistUp(item) }, modifier = Modifier.size(28.dp)) {
+                                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move up", tint = LuxGoldChange, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                    if (listIdx < activeItems.size - 1) {
+                                        IconButton(onClick = { viewModel.moveWishlistDown(item) }, modifier = Modifier.size(28.dp)) {
+                                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move down", tint = LuxMuted, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                    IconButton(onClick = { editingItem = item }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Edit, contentDescription = "Edit", tint = LuxGoldChange, modifier = Modifier.size(16.dp))
+                                    }
+                                    IconButton(onClick = { viewModel.markWishlistPurchased(item) }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = "Mark purchased", tint = LuxGreen, modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(onClick = { viewModel.deleteWishlistItem(item) }, modifier = Modifier.size(28.dp)) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = LuxError, modifier = Modifier.size(16.dp))
                                     }
                                 }
-                            } else {
-                                Text("Purchased ✓", color = LuxGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        if (!item.isPurchased) {
-                            Spacer(Modifier.height(10.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("Daily reservation", color = LuxMuted, fontSize = 11.sp)
-                                Text("$currency${String.format("%,.0f", item.dailyAllocation)} / day", color = LuxGoldChange, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                            val daysLeft = (item.targetMonths * 30).toInt()
-                            val saved = item.dailyAllocation * kotlin.math.max(0, daysLeft)
-                            val pct = (saved / item.estimatedPrice).toFloat().coerceIn(0f, 1f)
+                        Spacer(Modifier.height(10.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(if (isTopPriority) "Daily set aside (active)" else "Daily set aside (queued)", color = LuxMuted, fontSize = 11.sp)
+                            Text("$currency${String.format("%,.0f", item.dailyAllocation)} / day", color = if (isTopPriority) LuxGoldChange else LuxMuted, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                        // Savings progress
+                        if (item.savedAmount > 0.0) {
                             Spacer(Modifier.height(6.dp))
-                            Box(
-                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(LuxCardGray)
-                            ) {
-                                Box(modifier = Modifier.fillMaxWidth(pct).fillMaxHeight().background(LuxGoldChange, RoundedCornerShape(3.dp)))
+                            val savedPct = (item.savedAmount / item.estimatedPrice).toFloat().coerceIn(0f, 1f)
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Saved so far", color = LuxMuted, fontSize = 10.sp)
+                                Text("$currency${String.format("%,.0f", item.savedAmount)} / $currency${String.format("%,.0f", item.estimatedPrice)} (${(savedPct * 100).toInt()}%)", color = LuxGreen, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
                             }
-                            Text("On track to purchase in ${item.targetMonths} month${if (item.targetMonths != 1) "s" else ""}", color = LuxMuted.copy(alpha = 0.6f), fontSize = 10.sp, modifier = Modifier.padding(top = 3.dp))
+                            Spacer(Modifier.height(4.dp))
+                            Box(modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(LuxCardGray)) {
+                                Box(modifier = Modifier.fillMaxWidth(savedPct).fillMaxHeight().background(LuxGreen, RoundedCornerShape(3.dp)))
+                            }
+                        }
+                        if (!isTopPriority) {
+                            Spacer(Modifier.height(4.dp))
+                            Text("Queued — will activate after item #${listIdx} is purchased", color = LuxMuted.copy(alpha = 0.6f), fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+
+            // Purchased items (collapsed section)
+            if (purchasedItems.isNotEmpty()) {
+                Spacer(Modifier.height(16.dp))
+                Text("PURCHASED", style = Typography.labelLarge, color = LuxGreen, letterSpacing = 2.sp, fontSize = 10.sp)
+                purchasedItems.forEach { item ->
+                    Spacer(Modifier.height(6.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = LuxGreen.copy(alpha = 0.06f)),
+                        border = BorderStroke(1.dp, LuxGreen.copy(alpha = 0.3f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(item.name, color = LuxIvory.copy(alpha = 0.7f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                Text("$currency${String.format("%,.0f", item.estimatedPrice)}", color = LuxMuted, fontSize = 11.sp)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("✓ Done", color = LuxGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.width(8.dp))
+                                IconButton(onClick = { viewModel.deleteWishlistItem(item) }, modifier = Modifier.size(24.dp)) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = LuxMuted, modifier = Modifier.size(14.dp))
+                                }
+                            }
                         }
                     }
                 }
@@ -5189,6 +5256,106 @@ fun WishlistSubView(currency: String, viewModel: FinanceViewModel) {
                 showAddDialog = false
             }
         )
+    }
+
+    val editing = editingItem
+    if (editing != null) {
+        WishlistEditDialog(
+            currency = currency,
+            item = editing,
+            onDismiss = { editingItem = null },
+            onSave = { name, price, months ->
+                val daily = if (months > 0) price / (months * 30.0) else 0.0
+                viewModel.updateWishlistItemDetails(editing, name, price, months, daily)
+                editingItem = null
+            }
+        )
+    }
+}
+
+@Composable
+fun WishlistEditDialog(
+    currency: String,
+    item: WishlistItem,
+    onDismiss: () -> Unit,
+    onSave: (String, Double, Int) -> Unit
+) {
+    var name by remember { mutableStateOf(item.name) }
+    var price by remember { mutableStateOf(item.estimatedPrice.toLong().toString()) }
+    var months by remember { mutableStateOf(item.targetMonths.toString()) }
+
+    val priceVal = price.toDoubleOrNull() ?: 0.0
+    val monthsVal = months.toIntOrNull() ?: 1
+    val dailyAlloc = if (monthsVal > 0 && priceVal > 0) priceVal / (monthsVal * 30.0) else 0.0
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
+            border = BorderStroke(1.5.dp, LuxGoldChange.copy(alpha = 0.6f))
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(24.dp).verticalScroll(rememberScrollState())) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("EDIT PRODUCT", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = LuxMuted, modifier = Modifier.size(18.dp))
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it },
+                    label = { Text("Product name", color = LuxMuted, fontSize = 11.sp) },
+                    textStyle = TextStyle(color = LuxIvory),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange, unfocusedBorderColor = LuxCardGray, focusedTextColor = LuxIvory, unfocusedTextColor = LuxIvory, cursorColor = LuxGoldChange),
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = price, onValueChange = { if (it.all { c -> c.isDigit() || c == '.' }) price = it },
+                    label = { Text("Estimated price ($currency)", color = LuxMuted, fontSize = 11.sp) },
+                    leadingIcon = { Text(currency, color = LuxGoldChange, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.padding(start = 8.dp)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = TextStyle(color = LuxIvory, fontWeight = FontWeight.SemiBold),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange, unfocusedBorderColor = LuxCardGray, focusedTextColor = LuxIvory, unfocusedTextColor = LuxIvory, cursorColor = LuxGoldChange),
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = months, onValueChange = { if (it.all { c -> c.isDigit() } && (it.toIntOrNull() ?: 0) <= 60) months = it },
+                    label = { Text("Months to save (1–60)", color = LuxMuted, fontSize = 11.sp) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = TextStyle(color = LuxIvory),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange, unfocusedBorderColor = LuxCardGray, focusedTextColor = LuxIvory, unfocusedTextColor = LuxIvory, cursorColor = LuxGoldChange),
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+                )
+                if (dailyAlloc > 0.0) {
+                    Spacer(Modifier.height(12.dp))
+                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = LuxGreen.copy(alpha = 0.1f)), border = BorderStroke(1.dp, LuxGreen.copy(alpha = 0.4f)), shape = RoundedCornerShape(12.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Daily savings needed", color = LuxIvory, fontSize = 13.sp)
+                            Text("$currency${String.format("%,.0f", dailyAlloc)} / day", color = LuxGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = onDismiss, border = BorderStroke(1.dp, LuxMuted), shape = RoundedCornerShape(12.dp), modifier = Modifier.weight(1f)) {
+                        Text("Cancel", color = LuxIvory)
+                    }
+                    Button(
+                        onClick = { if (name.isNotBlank() && priceVal > 0 && monthsVal > 0) onSave(name, priceVal, monthsVal) },
+                        enabled = name.isNotBlank() && priceVal > 0 && monthsVal > 0,
+                        colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
+                        shape = RoundedCornerShape(12.dp), modifier = Modifier.weight(2f)
+                    ) {
+                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Save Changes", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 }
 

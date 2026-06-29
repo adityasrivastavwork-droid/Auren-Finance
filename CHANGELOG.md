@@ -2,6 +2,38 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased] — 2026-06-29
+
+### Added — Product Planner v2, Sidebar settings, Scroll fix, Default account removal
+
+#### Product Planner (Plan → Product Planner tab)
+- **Priority ordering**: Each wishlist item has a `priority` (Int) field. Only the #1-priority item is counted against the daily discretionary spend limit; all others are queued and activate automatically after the current item is purchased.
+- **Up/down arrows**: Users can reorder items via ↑↓ buttons on each card. `moveWishlistUp` / `moveWishlistDown` in ViewModel swap priority values.
+- **Edit product**: Tap the ✏ icon to edit name, price, and target months. `WishlistEditDialog` + `viewModel.updateWishlistItemDetails`.
+- **Saved amount tracking**: `savedAmount: Double` field on `WishlistItem`. Green progress bar shows how much is already saved for each item.
+- **Rollover savings**: `viewModel.applyRolloverSavingsToWishlist(amount)` distributes extra month-end savings to the top-priority item; if it fully funds that item it cascades to the next.
+- **Purchased section**: Completed items move to a collapsed "PURCHASED" section at the bottom.
+- DB v6 migration updated: `priority` and `savedAmount` columns added to `wishlist_items` CREATE TABLE.
+
+#### Settings Sidebar (new options)
+- **Monthly spend budget**: New "Monthly spend budget" row in Vault Profile section → `SingleNumberEditor` → calls `viewModel.setMonthlyDiscretionaryBudget()`.
+- **Primary bank account**: New "Primary bank account" row → `PrimaryBankEditor` — lists all non-credit/investment accounts, tap to designate primary (sets `institution = "Primary"`).
+- Both added as new `SettingsRoute` entries: `DISCRETIONARY`, `PRIMARY_BANK`.
+
+#### Home screen scroll fix
+- Removed `Box(fillMaxSize)` wrapper around the HomeScreen scrollable Column. `fillMaxSize` on a parent constrained the Column height to viewport, blocking scroll. Now the Column sits directly in the composable with `fillMaxWidth` only.
+- `WishlistSubView` also changed from `fillMaxSize` to `fillMaxWidth` for the same reason.
+
+#### Default account cleanup
+- ViewModel `init` now runs a one-time cleanup: any account with `name == "Primary Bank Account"` and `institution == "Main Institution"` is deleted on startup, removing the legacy auto-created account from existing users.
+- `onboardUser` no longer creates a default account for any user.
+
+#### Other
+- `updateAccount(account: Account)` added as a public ViewModel function.
+- `addWishlistItem` now assigns the next sequential priority automatically.
+
+---
+
 ## [Unreleased] — 2026-06-27
 
 ### Fixed — Multi-issue UX patch (13 fixes)
@@ -10,13 +42,26 @@ All notable changes to this project are documented here.
 - **Sidebar access from all screens**: Added `onSettingsClick: () -> Unit` param to `PlanScreen`, `InsightsScreen`, `CoachScreen`. All three now show a hamburger `Menu` icon in their header to open the sidebar.
 - **Bottom content clipping**: Added `Spacer(height = 100.dp)` at the end of `HomeScreen`, `InsightsScreen`, `BudgetSubView`, and `CoachScreen` to prevent content hiding behind the floating bottom nav bar.
 - **Bank feed island removed**: Removed `BankFeedSyncWidget` block from `HomeScreen` unconditionally.
-- **New-user onboarding-first flow**: Restructured `AurenApp` routing — new (unauthed) users see `OnboardingFlow` first, then `FirebaseAuthenticationScreen` after confirming all details. `PendingOnboardingData` stores onboarding results until auth completes, then commits to DB.
-- **Primary objective split into its own screen**: `STEP_OBJECTIVE_MODE` (combined) replaced with `STEP_OBJECTIVE` and `STEP_BUDGET_MODE` (two separate screens). `STEP_COUNT` bumped from 8 to 9.
-- **Bank name autocomplete**: `AccountEntryCard` (onboarding) and `AddAccountDialog` now show a live suggestion dropdown of 30+ major Indian and international banks when user types ≥ 2 characters.
-- **Dashboard widget order persisted**: `widgetOrder: String = ""` added to `UserProfile` (DB v5 migration). `DashboardStep` drag order saved via `persistOnboardingProgress` and committed via `onComplete`. `HomeScreen` renders charts in user's saved order using `viewModel.widgetOrder` StateFlow.
-- **Drag only from hamburger handle**: `DashboardStep` drag gesture moved from Card-level `pointerInput` to only the `DragHandle` icon's modifier — drag no longer triggers on card tap.
-- **Card shadow in light mode**: Replaced `graphicsLayer { shadowElevation }` (which caused purple tint from Material3 purple primary) with `Modifier.shadow(elevation = 2.dp, ambientColor = grey, spotColor = grey)` on `CinematicGlassCard` and `InteractiveGeometricCard`.
-- **Onboarding back button**: Removed "Back" text from `BottomBar` back button — now arrow icon only.
+- **New-user onboarding-first flow**: Restructured `AurenApp` routing — new (unauthed) users see `OnboardingFlow` first, then `FirebaseAuthenticationScreen` after confirming all details.
+- **Primary objective split**: Two separate onboarding screens for objective and budget mode.
+- **Bank name autocomplete**: 30+ major Indian/international banks suggested in account entry fields.
+- **Dashboard widget order persisted**: `widgetOrder` in `UserProfile` (DB v5). Home screen renders charts in saved order.
+- **Drag only from hamburger handle**: DashboardStep drag moved to handle icon only.
+- **Card shadow light mode**: Replaced purple `graphicsLayer` shadow with neutral grey `Modifier.shadow`.
+- **Onboarding back button**: Arrow icon only, no text.
+
+### Added — Product Planner, Discretionary Budget, Income-based Safe-to-Spend (2026-06-29 batch)
+- **WishlistItem entity** (`wishlist_items` table, DB v6): name, price, targetMonths, dailyAllocation, isPurchased, createdAt, priority, savedAmount.
+- **monthlyDiscretionaryBudget** field on UserProfile; drives Safe-to-Spend instead of account balance.
+- **STEP_DISCRETIONARY** onboarding step (step 5 of 10): asks monthly non-essential budget, shows live daily limit preview.
+- **Income-based Safe-to-Spend**: `salary × discretionary% ÷ days` minus top-priority wishlist item daily allocation.
+- **Product Planner subtab** in Plan screen with add/edit/delete/purchase/priority-ordering.
+- **Coach screen**: bottom nav bar always hidden; back navigation: 1× → home, 2× → close app.
+- **Unified header cards** on all screens (Transactions/Plan/Insights/Coach) with hamburger menu.
+- **Settings icon removed** from home header (hamburger only).
+- **FAB removed** from Transactions screen.
+- **30-day chart switcher**: toggle between "By Type" (Expense/Income/Savings) and "By Category" (7 expense categories).
+
 
 
 - **`data class AccountEntry`** and **`data class RecurringEntry`** added to `OnboardingFlow.kt` at file scope for type-safe onboarding data transfer.

@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -87,7 +88,7 @@ import com.example.ui.theme.langOption
  * (readability) — one decision per screen, generous spacing, no competing anchors.
  */
 
-private enum class SettingsRoute { LIST, IDENTITY, INCOME, BUFFER, CURRENCY, MODE, OBJECTIVE, LANGUAGE, THEME, WIDGETS, SHAKE, RESET, LOGOUT }
+private enum class SettingsRoute { LIST, IDENTITY, INCOME, BUFFER, CURRENCY, MODE, OBJECTIVE, LANGUAGE, THEME, WIDGETS, SHAKE, RESET, LOGOUT, DISCRETIONARY, PRIMARY_BANK }
 
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
@@ -137,12 +138,13 @@ fun SettingsSidebar(
     ) {
         var route by remember { mutableStateOf(SettingsRoute.LIST) }
 
-        // Local edit state — mirrors profile, committed via viewModel.updateProfile.
+        // Local edit state — mirrors profile, committed via viewModel
         var editedCurrency by remember { mutableStateOf(profile?.currency ?: "₹") }
         var editedObjective by remember { mutableStateOf(profile?.primaryObjective ?: "Control spending") }
         var editedMode by remember { mutableStateOf(profile?.appMode ?: "Strict Mode") }
         var editedSalary by remember { mutableStateOf(profile?.salaryAmount?.toInt()?.toString() ?: "60000") }
         var editedBuffer by remember { mutableStateOf(profile?.safetyBuffer?.toInt()?.toString() ?: "2000") }
+        var editedDiscretionary by remember { mutableStateOf(profile?.monthlyDiscretionaryBudget?.toInt()?.takeIf { it > 0 }?.toString() ?: "") }
         LaunchedEffect(profile) {
             if (profile != null) {
                 editedCurrency = profile.currency
@@ -150,23 +152,15 @@ fun SettingsSidebar(
                 editedMode = profile.appMode
                 editedSalary = profile.salaryAmount.toInt().toString()
                 editedBuffer = profile.safetyBuffer.toInt().toString()
+                editedDiscretionary = profile.monthlyDiscretionaryBudget.toInt().takeIf { it > 0 }?.toString() ?: ""
             }
         }
-        // Reset route when the drawer is closed so it always reopens on the list.
         LaunchedEffect(visible) { if (!visible) route = SettingsRoute.LIST }
 
-        // Commit helper — used by every detail screen that mutates profile fields.
         fun commitProfile() {
             val salVal = editedSalary.toDoubleOrNull() ?: 60000.0
             val bufVal = editedBuffer.toDoubleOrNull() ?: 2000.0
-            viewModel.updateProfile(
-                currency = editedCurrency,
-                objective = editedObjective,
-                mode = editedMode,
-                salary = salVal,
-                buffer = bufVal,
-                isCompleted = true
-            )
+            viewModel.updateProfile(currency = editedCurrency, objective = editedObjective, mode = editedMode, salary = salVal, buffer = bufVal, isCompleted = true)
         }
 
         Column(
@@ -225,6 +219,7 @@ fun SettingsSidebar(
                             buffer = editedBuffer,
                             mode = editedMode,
                             objective = editedObjective,
+                            discretionary = editedDiscretionary,
                             onRoute = { route = it }
                         )
                         SettingsRoute.IDENTITY -> IdentityCard(userEmail = userEmail)
@@ -278,6 +273,19 @@ fun SettingsSidebar(
                         SettingsRoute.THEME -> ThemeEditor()
                         SettingsRoute.WIDGETS -> WidgetsEditor(viewModel = viewModel)
                         SettingsRoute.SHAKE -> ShakeToAddEditor(viewModel = viewModel, profile = profile)
+                        SettingsRoute.DISCRETIONARY -> SingleNumberEditor(
+                            label = "Monthly discretionary budget",
+                            helper = "How much you want to spend monthly on non-essentials (shopping, dining, outings, fuel, entertainment etc). This sets your daily spend limit.",
+                            value = editedDiscretionary,
+                            currency = editedCurrency,
+                            onChange = { editedDiscretionary = it },
+                            onSave = {
+                                viewModel.setMonthlyDiscretionaryBudget(editedDiscretionary.toDoubleOrNull() ?: 0.0)
+                                route = SettingsRoute.LIST
+                            },
+                            testTag = "sidebar_discretionary_input"
+                        )
+                        SettingsRoute.PRIMARY_BANK -> PrimaryBankEditor(viewModel = viewModel, onDone = { route = SettingsRoute.LIST })
                         SettingsRoute.RESET -> ResetSetupConfirm(
                             onCancel = { route = SettingsRoute.LIST },
                             onConfirm = {
@@ -377,6 +385,7 @@ private fun SettingsListScreen(
     buffer: String,
     mode: String,
     objective: String,
+    discretionary: String,
     onRoute: (SettingsRoute) -> Unit
 ) {
     // Identity card — single visual focal point at the top.
@@ -448,6 +457,18 @@ private fun SettingsListScreen(
         label = "Safety buffer",
         value = "$currency$buffer",
         onClick = { onRoute(SettingsRoute.BUFFER) }
+    )
+    SidebarRow(
+        icon = Icons.Default.Savings,
+        label = "Monthly spend budget",
+        value = if (discretionary.isNotBlank()) "$currency$discretionary" else "Auto",
+        onClick = { onRoute(SettingsRoute.DISCRETIONARY) }
+    )
+    SidebarRow(
+        icon = Icons.Default.AccountBalance,
+        label = "Primary bank account",
+        value = "Change",
+        onClick = { onRoute(SettingsRoute.PRIMARY_BANK) }
     )
     SidebarRow(
         icon = Icons.Default.CurrencyExchange,
@@ -1056,5 +1077,47 @@ private fun InfoTip(text: String) {
             fontSize = 11.sp,
             lineHeight = 16.sp
         )
+    }
+}
+
+@Composable
+private fun PrimaryBankEditor(viewModel: FinanceViewModel, onDone: () -> Unit) {
+    val accounts by viewModel.accounts.collectAsState()
+    val savingsAccounts = accounts.filter { it.type != "Credit Card" && it.type != "Investment" }
+
+    InfoTip(text = "The primary account is used as the default source for transactions and is shown prominently in your dashboard.")
+    Spacer(Modifier.height(12.dp))
+
+    if (savingsAccounts.isEmpty()) {
+        Text("No accounts found. Add accounts via the dashboard first.", color = LuxMuted, fontSize = 13.sp)
+        return
+    }
+
+    savingsAccounts.forEach { acc ->
+        val isPrimary = acc.institution == "Primary"
+        Card(
+            modifier = Modifier.fillMaxWidth().clickable {
+                // Clear primary flag on all, set on selected
+                savingsAccounts.filter { it.id != acc.id }.forEach { viewModel.updateAccount(it.copy(institution = "")) }
+                viewModel.updateAccount(acc.copy(institution = "Primary"))
+                onDone()
+            },
+            colors = CardDefaults.cardColors(containerColor = if (isPrimary) LuxGoldChange.copy(alpha = 0.12f) else LuxCardGray.copy(alpha = 0.4f)),
+            border = BorderStroke(1.dp, if (isPrimary) LuxGoldChange else LuxCardGray),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(acc.name, color = LuxIvory, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("${acc.type} · Balance: ${viewModel.profile.value?.currency ?: "₹"}${String.format("%,.0f", acc.balance)}", color = LuxMuted, fontSize = 11.sp)
+                }
+                if (isPrimary) {
+                    Text("PRIMARY", color = LuxGoldChange, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                } else {
+                    Text("Set as primary", color = LuxMuted, fontSize = 11.sp)
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
     }
 }

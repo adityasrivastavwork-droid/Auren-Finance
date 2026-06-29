@@ -18,11 +18,18 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     init {
         val database = AppDatabase.getDatabase(application)
         repository = FinanceRepository(database.financeDao())
-        
+
         // Listen to profile flow to mark it as loaded
         repository.profile
             .onEach { _isProfileLoaded.value = true }
             .launchIn(viewModelScope)
+
+        // One-time cleanup: remove the legacy auto-created default account
+        viewModelScope.launch {
+            val accounts = repository.getAccountsDirect()
+            accounts.filter { it.name == "Primary Bank Account" && it.institution == "Main Institution" }
+                .forEach { repository.deleteAccount(it) }
+        }
     }
 
     // Database UI States
@@ -129,8 +136,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             (salary - buffer - billsTotal - remainingMinDebts).coerceAtLeast(0.0)
         }
 
-        // Wishlist items reduce daily discretionary (only active, unpurchased items)
-        val wishlistDailyAllocation = wishlist.filter { !it.isPurchased }.sumOf { it.dailyAllocation }
+        val activeWishlist = wishlist.filter { !it.isPurchased }
+        // Only the #1-priority item is counted toward daily budget; others are queued
+        val wishlistDailyAllocation = activeWishlist.minByOrNull { it.priority }?.dailyAllocation ?: 0.0
 
         val dailyBudget = (monthlyDiscretionary / daysRem.toDouble().coerceAtLeast(1.0))
         (dailyBudget - wishlistDailyAllocation).coerceAtLeast(0.0)
@@ -267,9 +275,11 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun deleteAccount(account: Account) {
-        viewModelScope.launch {
-            repository.deleteAccount(account)
-        }
+        viewModelScope.launch { repository.deleteAccount(account) }
+    }
+
+    fun updateAccount(account: Account) {
+        viewModelScope.launch { repository.updateAccount(account) }
     }
 
     fun addTransaction(amount: Double, type: String, accountId: Long, category: String, merchant: String, note: String = "", targetAccId: Long? = null, dateOverride: Long? = null, isRecurring: Boolean = false) {
@@ -429,15 +439,41 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     fun addWishlistItem(name: String, estimatedPrice: Double, targetMonths: Int) {
         viewModelScope.launch {
             val dailyAlloc = if (targetMonths > 0) estimatedPrice / (targetMonths * 30.0) else 0.0
+            // Assign next priority number
+            val existing = repository.wishlistItems.first()
+            val nextPriority = (existing.filter { !it.isPurchased }.maxOfOrNull { it.priority } ?: 0) + 1
             repository.insertWishlistItem(
                 WishlistItem(
                     name = name,
                     estimatedPrice = estimatedPrice,
                     targetMonths = targetMonths,
                     dailyAllocation = dailyAlloc,
+                    priority = nextPriority,
                     createdAt = System.currentTimeMillis()
                 )
             )
+        }
+    }
+
+    fun moveWishlistUp(item: WishlistItem) {
+        viewModelScope.launch {
+            val active = repository.wishlistItems.first().filter { !it.isPurchased }.sortedBy { it.priority }
+            val idx = active.indexOfFirst { it.id == item.id }
+            if (idx <= 0) return@launch
+            val above = active[idx - 1]
+            repository.updateWishlistItem(above.copy(priority = item.priority))
+            repository.updateWishlistItem(item.copy(priority = above.priority))
+        }
+    }
+
+    fun moveWishlistDown(item: WishlistItem) {
+        viewModelScope.launch {
+            val active = repository.wishlistItems.first().filter { !it.isPurchased }.sortedBy { it.priority }
+            val idx = active.indexOfFirst { it.id == item.id }
+            if (idx < 0 || idx >= active.size - 1) return@launch
+            val below = active[idx + 1]
+            repository.updateWishlistItem(below.copy(priority = item.priority))
+            repository.updateWishlistItem(item.copy(priority = below.priority))
         }
     }
 
@@ -447,6 +483,32 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
 
     fun deleteWishlistItem(item: WishlistItem) {
         viewModelScope.launch { repository.deleteWishlistItem(item) }
+    }
+
+    fun updateWishlistItemDetails(item: WishlistItem, name: String, estimatedPrice: Double, targetMonths: Int, dailyAllocation: Double) {
+        viewModelScope.launch {
+            repository.updateWishlistItem(item.copy(name = name, estimatedPrice = estimatedPrice, targetMonths = targetMonths, dailyAllocation = dailyAllocation))
+        }
+    }
+
+    /** Called at month-end: distributes extra savings to the top-priority wishlist item. */
+    fun applyRolloverSavingsToWishlist(extraAmount: Double) {
+        viewModelScope.launch {
+            val items = repository.wishlistItems.first().filter { !it.isPurchased }.sortedBy { it.priority }
+            val topItem = items.firstOrNull() ?: return@launch
+            val newSaved = topItem.savedAmount + extraAmount
+            if (newSaved >= topItem.estimatedPrice) {
+                // Fully funded — mark purchased, carry over remaining to next item
+                repository.updateWishlistItem(topItem.copy(savedAmount = topItem.estimatedPrice, isPurchased = true))
+                val carryover = newSaved - topItem.estimatedPrice
+                if (carryover > 0 && items.size > 1) {
+                    val next = items[1]
+                    repository.updateWishlistItem(next.copy(savedAmount = (next.savedAmount + carryover).coerceAtMost(next.estimatedPrice)))
+                }
+            } else {
+                repository.updateWishlistItem(topItem.copy(savedAmount = newSaved))
+            }
+        }
     }
 
     fun setMonthlyDiscretionaryBudget(amount: Double) {
