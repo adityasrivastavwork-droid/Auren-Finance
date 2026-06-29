@@ -3471,7 +3471,7 @@ fun PlanScreen(
                 "bills" to "Bills & Subs",
                 "debts" to "Debt & EMI",
                 "goals" to "Savings Goals",
-                "wishlist" to "Product Planner"
+                "wishlist" to "Buy Planner"
             )
             tabs.forEach { (key, label) ->
                 val isSelected = subTab == key
@@ -3487,7 +3487,32 @@ fun PlanScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        // Contextual hint only on goals/wishlist tabs to clarify the distinction
+        if (subTab == "goals" || subTab == "wishlist") {
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(LuxCardGray.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = if (subTab == "goals") Icons.Default.Savings else Icons.Default.ShoppingCart,
+                    contentDescription = null, tint = LuxGoldChange, modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = if (subTab == "goals")
+                        "Savings Goals — long-term buckets you fund manually. Does not affect your daily spend limit."
+                    else
+                        "Buy Planner — saving for a specific purchase. Your #1 item is deducted from today's daily limit.",
+                    color = LuxMuted, fontSize = 11.sp, lineHeight = 15.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         Box(
             modifier = Modifier
@@ -4428,7 +4453,7 @@ fun GoalsSubView(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = "RESERVE WEALTH BUCKETS", color = LuxGoldChange, style = Typography.labelLarge)
+            Text(text = "LONG-TERM SAVINGS GOALS", color = LuxGoldChange, style = Typography.labelLarge, letterSpacing = 2.sp)
             Button(
                 onClick = onAddClick,
                 colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
@@ -5085,10 +5110,10 @@ fun WishlistSubView(currency: String, viewModel: FinanceViewModel) {
         // Summary card
         CinematicGlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
             Column(modifier = Modifier.padding(20.dp)) {
-                Text("PRODUCT PLANNER", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
-                Text("Planned Purchase Tracker", style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
+                Text("BUY PLANNER", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                Text("Saving for a specific purchase", style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
-                Text("Only your #1 priority item is counted toward your daily spend limit. Items below it are queued.", color = LuxMuted, fontSize = 11.sp, lineHeight = 16.sp)
+                Text("Your #1 priority item is automatically reserved from your daily spend limit. Others are queued — they don't cost you anything until it's their turn.", color = LuxMuted, fontSize = 11.sp, lineHeight = 16.sp)
                 Spacer(Modifier.height(12.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Column {
