@@ -108,4 +108,17 @@ interface FinanceDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertReview(review: WeeklyReview)
+
+    // WishlistItems
+    @Query("SELECT * FROM wishlist_items ORDER BY createdAt ASC")
+    fun getWishlistFlow(): Flow<List<WishlistItem>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertWishlistItem(item: WishlistItem)
+
+    @Update
+    suspend fun updateWishlistItem(item: WishlistItem)
+
+    @Delete
+    suspend fun deleteWishlistItem(item: WishlistItem)
 }

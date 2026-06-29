@@ -47,6 +47,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     val reviews: StateFlow<List<WeeklyReview>> = repository.reviews
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val wishlistItems: StateFlow<List<WishlistItem>> = repository.wishlistItems
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     // Simulated/Real API Keys (can configure via Secrets page)
     private val geminiKey: String
         get() = com.example.BuildConfig.GEMINI_API_KEY
@@ -107,16 +110,30 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 1)
 
     val safeToSpendToday: StateFlow<Double> = combine(
-        totalUsableBalance,
         profile,
         upcomingBillsTotal,
         debts,
-        daysRemainingInCycle
-    ) { usableBalance, prof, billsTotal, debtsList, daysRem ->
+        daysRemainingInCycle,
+        wishlistItems
+    ) { prof, billsTotal, debtsList, daysRem, wishlist ->
+        val salary = prof?.salaryAmount ?: 0.0
         val buffer = prof?.safetyBuffer ?: 2000.0
-        val remainingMinDebts = debtsList.sumOf { it.minimumPayment } // assume due remaining
-        val spendableMoney = (usableBalance - buffer - billsTotal - remainingMinDebts).coerceAtLeast(0.0)
-        (spendableMoney / daysRem).coerceAtLeast(0.0)
+        val remainingMinDebts = debtsList.sumOf { it.minimumPayment }
+
+        // Monthly discretionary: what user said they want to spend on non-basics.
+        // If not explicitly set, auto-calc = salary - buffer - bills - min debts (clamped)
+        val explicitDiscretionary = prof?.monthlyDiscretionaryBudget ?: 0.0
+        val monthlyDiscretionary = if (explicitDiscretionary > 0.0) {
+            explicitDiscretionary
+        } else {
+            (salary - buffer - billsTotal - remainingMinDebts).coerceAtLeast(0.0)
+        }
+
+        // Wishlist items reduce daily discretionary (only active, unpurchased items)
+        val wishlistDailyAllocation = wishlist.filter { !it.isPurchased }.sumOf { it.dailyAllocation }
+
+        val dailyBudget = (monthlyDiscretionary / daysRem.toDouble().coerceAtLeast(1.0))
+        (dailyBudget - wishlistDailyAllocation).coerceAtLeast(0.0)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0.0)
 
     // Check if the bill is already completed/paid in this cycle
@@ -151,6 +168,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         buffer: Double,
         hiddenWidgets: String = "",
         widgetOrder: String = "",
+        monthlyDiscretionaryBudget: Double = 0.0,
         skipDefaultAccount: Boolean = false
     ) {
         viewModelScope.launch {
@@ -165,20 +183,11 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 isOnboarded = true,
                 onboardingStep = -1,
                 hiddenWidgets = hiddenWidgets,
-                widgetOrder = widgetOrder
+                widgetOrder = widgetOrder,
+                monthlyDiscretionaryBudget = monthlyDiscretionaryBudget
             )
             repository.saveProfile(merged)
-
-            if (!skipDefaultAccount && (existing == null || !existing.isOnboarded)) {
-                repository.insertAccount(
-                    Account(
-                        name = "Primary Bank Account",
-                        type = "Savings",
-                        balance = currentBalance,
-                        institution = "Main Institution"
-                    )
-                )
-            }
+            // No default account created — user must add their own accounts
         }
     }
 
@@ -197,7 +206,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         payday: Int? = null,
         buffer: Double? = null,
         hiddenWidgets: String? = null,
-        widgetOrder: String? = null
+        widgetOrder: String? = null,
+        monthlyDiscretionaryBudget: Double? = null
     ) {
         viewModelScope.launch {
             val current = repository.getProfileDirect() ?: UserProfile()
@@ -211,7 +221,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     salaryDate = (payday ?: current.salaryDate).coerceIn(1, 31),
                     safetyBuffer = buffer ?: current.safetyBuffer,
                     hiddenWidgets = hiddenWidgets ?: current.hiddenWidgets,
-                    widgetOrder = widgetOrder ?: current.widgetOrder
+                    widgetOrder = widgetOrder ?: current.widgetOrder,
+                    monthlyDiscretionaryBudget = monthlyDiscretionaryBudget ?: current.monthlyDiscretionaryBudget
                 )
             )
         }
@@ -412,6 +423,36 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     fun deleteGoal(goal: FinancialGoal) {
         viewModelScope.launch {
             repository.deleteGoal(goal)
+        }
+    }
+
+    fun addWishlistItem(name: String, estimatedPrice: Double, targetMonths: Int) {
+        viewModelScope.launch {
+            val dailyAlloc = if (targetMonths > 0) estimatedPrice / (targetMonths * 30.0) else 0.0
+            repository.insertWishlistItem(
+                WishlistItem(
+                    name = name,
+                    estimatedPrice = estimatedPrice,
+                    targetMonths = targetMonths,
+                    dailyAllocation = dailyAlloc,
+                    createdAt = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun markWishlistPurchased(item: WishlistItem) {
+        viewModelScope.launch { repository.updateWishlistItem(item.copy(isPurchased = true)) }
+    }
+
+    fun deleteWishlistItem(item: WishlistItem) {
+        viewModelScope.launch { repository.deleteWishlistItem(item) }
+    }
+
+    fun setMonthlyDiscretionaryBudget(amount: Double) {
+        viewModelScope.launch {
+            val current = repository.getProfileDirect() ?: return@launch
+            repository.saveProfile(current.copy(monthlyDiscretionaryBudget = amount))
         }
     }
 

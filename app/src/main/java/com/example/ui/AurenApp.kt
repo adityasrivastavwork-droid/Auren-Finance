@@ -66,7 +66,8 @@ private data class PendingOnboardingData(
     val hiddenWidgets: String,
     val accounts: List<com.example.ui.AccountEntry>,
     val recurringItems: List<com.example.ui.RecurringEntry>,
-    val widgetOrder: String = ""
+    val widgetOrder: String = "",
+    val monthlyDiscretionaryBudget: Double = 0.0
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -201,8 +202,8 @@ fun AurenApp(viewModel: FinanceViewModel) {
         OnboardingFlow(
             profile = profile,
             viewModel = viewModel,
-            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder ->
-                pendingOnboardingData = PendingOnboardingData(cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder)
+            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder, discretionary ->
+                pendingOnboardingData = PendingOnboardingData(cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder, discretionary)
             }
         )
     } else if (!isFirebaseAuthed) {
@@ -220,6 +221,7 @@ fun AurenApp(viewModel: FinanceViewModel) {
                         salary = d.salary, payday = d.payday, currentBalance = d.balance,
                         buffer = d.buffer, hiddenWidgets = d.hiddenWidgets,
                         widgetOrder = d.widgetOrder,
+                        monthlyDiscretionaryBudget = d.monthlyDiscretionaryBudget,
                         skipDefaultAccount = d.accounts.isNotEmpty()
                     )
                     d.accounts.forEach { acc ->
@@ -237,12 +239,13 @@ fun AurenApp(viewModel: FinanceViewModel) {
         OnboardingFlow(
             profile = profile,
             viewModel = viewModel,
-            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder ->
+            onComplete = { cur, obj, md, sal, pay, bal, buf, hidden, accounts, recurringItems, widgetOrder, discretionary ->
                 viewModel.onboardUser(
                     currency = cur, objective = obj, mode = md, salary = sal,
                     payday = pay, currentBalance = bal, buffer = buf,
                     hiddenWidgets = hidden,
                     widgetOrder = widgetOrder,
+                    monthlyDiscretionaryBudget = discretionary,
                     skipDefaultAccount = accounts.isNotEmpty()
                 )
                 accounts.forEach { acc ->
@@ -3469,7 +3472,8 @@ fun PlanScreen(
                 "budget" to "Budget Allocator",
                 "bills" to "Bills & Subs",
                 "debts" to "Debt & EMI",
-                "goals" to "Savings Goals"
+                "goals" to "Savings Goals",
+                "wishlist" to "Product Planner"
             )
             tabs.forEach { (key, label) ->
                 val isSelected = subTab == key
@@ -3508,6 +3512,7 @@ fun PlanScreen(
                 )
                 "debts" -> DebtsSubView(debts = debts, currency = currency, onAddClick = onAddDebtClick, onDelete = onDeleteDebt)
                 "goals" -> GoalsSubView(goals = goals, accounts = accounts, currency = currency, onAddClick = onAddGoalClick, onAddFunds = { g, bal, accId -> viewModel.addFundsToGoal(g, bal, accId) }, onDelete = onDeleteGoal, viewModel = viewModel)
+                "wishlist" -> WishlistSubView(currency = currency, viewModel = viewModel)
             }
         }
     }
@@ -5063,7 +5068,227 @@ fun GoalsSubView(
 }
 
 @Composable
-fun FundGoalSourceSelectionDialog(
+fun WishlistSubView(currency: String, viewModel: FinanceViewModel) {
+    val wishlistItems by viewModel.wishlistItems.collectAsStateWithLifecycle()
+    val profile by viewModel.profile.collectAsStateWithLifecycle()
+    val dailyBudget by viewModel.safeToSpendToday.collectAsStateWithLifecycle()
+
+    var showAddDialog by remember { mutableStateOf(false) }
+
+    val totalDailyAllocation = wishlistItems.filter { !it.isPurchased }.sumOf { it.dailyAllocation }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        // Summary card
+        CinematicGlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("PRODUCT PLANNER", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                Text("Planned Purchase Tracker", style = Typography.titleMedium, color = LuxIvory, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Column {
+                        Text("Daily budget reserved", color = LuxMuted, fontSize = 11.sp)
+                        Text("$currency${String.format("%,.0f", totalDailyAllocation)} / day", color = LuxError, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Remaining daily spend", color = LuxMuted, fontSize = 11.sp)
+                        Text("$currency${String.format("%,.0f", (dailyBudget).coerceAtLeast(0.0))} / day", color = LuxGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("YOUR WISHLIST", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+            Button(
+                onClick = { showAddDialog = true },
+                colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("+ Add Product", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        if (wishlistItems.isEmpty()) {
+            CinematicGlassCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.ShoppingCart, contentDescription = null, tint = LuxMuted, modifier = Modifier.size(40.dp))
+                        Spacer(Modifier.height(8.dp))
+                        Text("No planned purchases yet.", color = LuxMuted, fontSize = 14.sp, textAlign = TextAlign.Center)
+                        Text("Add a product and we'll adjust your daily spend limit to help you save for it.", color = LuxMuted.copy(alpha = 0.7f), fontSize = 12.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
+                    }
+                }
+            }
+        } else {
+            wishlistItems.forEach { item ->
+                Spacer(Modifier.height(8.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = if (item.isPurchased) LuxGreen.copy(alpha = 0.08f) else LuxCardGray.copy(alpha = 0.4f)),
+                    border = BorderStroke(1.dp, if (item.isPurchased) LuxGreen.copy(alpha = 0.4f) else LuxGoldChange.copy(alpha = 0.3f)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(item.name, color = LuxIvory, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                                Text("$currency${String.format("%,.0f", item.estimatedPrice)} · ${item.targetMonths} month${if (item.targetMonths != 1) "s" else ""}", color = LuxMuted, fontSize = 12.sp)
+                            }
+                            if (!item.isPurchased) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = { viewModel.markWishlistPurchased(item) }, modifier = Modifier.size(32.dp)) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = "Mark purchased", tint = LuxGreen, modifier = Modifier.size(20.dp))
+                                    }
+                                    IconButton(onClick = { viewModel.deleteWishlistItem(item) }, modifier = Modifier.size(32.dp)) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = LuxError, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            } else {
+                                Text("Purchased ✓", color = LuxGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        if (!item.isPurchased) {
+                            Spacer(Modifier.height(10.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text("Daily reservation", color = LuxMuted, fontSize = 11.sp)
+                                Text("$currency${String.format("%,.0f", item.dailyAllocation)} / day", color = LuxGoldChange, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            }
+                            val daysLeft = (item.targetMonths * 30).toInt()
+                            val saved = item.dailyAllocation * kotlin.math.max(0, daysLeft)
+                            val pct = (saved / item.estimatedPrice).toFloat().coerceIn(0f, 1f)
+                            Spacer(Modifier.height(6.dp))
+                            Box(
+                                modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(LuxCardGray)
+                            ) {
+                                Box(modifier = Modifier.fillMaxWidth(pct).fillMaxHeight().background(LuxGoldChange, RoundedCornerShape(3.dp)))
+                            }
+                            Text("On track to purchase in ${item.targetMonths} month${if (item.targetMonths != 1) "s" else ""}", color = LuxMuted.copy(alpha = 0.6f), fontSize = 10.sp, modifier = Modifier.padding(top = 3.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(120.dp))
+    }
+
+    if (showAddDialog) {
+        WishlistAddDialog(
+            currency = currency,
+            onDismiss = { showAddDialog = false },
+            onAdd = { name, price, months ->
+                viewModel.addWishlistItem(name, price, months)
+                showAddDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+fun WishlistAddDialog(
+    currency: String,
+    onDismiss: () -> Unit,
+    onAdd: (String, Double, Int) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var price by remember { mutableStateOf("") }
+    var months by remember { mutableStateOf("3") }
+
+    val priceVal = price.toDoubleOrNull() ?: 0.0
+    val monthsVal = months.toIntOrNull() ?: 3
+    val dailyAlloc = if (monthsVal > 0 && priceVal > 0) priceVal / (monthsVal * 30.0) else 0.0
+
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = LuxDarkGray),
+            border = BorderStroke(1.5.dp, LuxGoldChange.copy(alpha = 0.6f))
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(24.dp).verticalScroll(rememberScrollState())) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("PLAN A PURCHASE", style = Typography.labelLarge, color = LuxGoldChange, letterSpacing = 2.sp)
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = LuxMuted, modifier = Modifier.size(18.dp))
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = name, onValueChange = { name = it },
+                    label = { Text("Product name", color = LuxMuted, fontSize = 11.sp) },
+                    placeholder = { Text("e.g. iPhone 15, Laptop, Vacation", color = LuxMuted.copy(alpha = 0.5f)) },
+                    textStyle = TextStyle(color = LuxIvory),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange, unfocusedBorderColor = LuxCardGray, focusedTextColor = LuxIvory, unfocusedTextColor = LuxIvory, cursorColor = LuxGoldChange),
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = price, onValueChange = { if (it.all { c -> c.isDigit() || c == '.' }) price = it },
+                    label = { Text("Estimated price ($currency)", color = LuxMuted, fontSize = 11.sp) },
+                    leadingIcon = { Text(currency, color = LuxGoldChange, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.padding(start = 8.dp)) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = TextStyle(color = LuxIvory, fontWeight = FontWeight.SemiBold),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange, unfocusedBorderColor = LuxCardGray, focusedTextColor = LuxIvory, unfocusedTextColor = LuxIvory, cursorColor = LuxGoldChange),
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+                )
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = months, onValueChange = { if (it.all { c -> c.isDigit() } && (it.toIntOrNull() ?: 0) <= 60) months = it },
+                    label = { Text("Months to save (1–60)", color = LuxMuted, fontSize = 11.sp) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = TextStyle(color = LuxIvory),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = LuxGoldChange, unfocusedBorderColor = LuxCardGray, focusedTextColor = LuxIvory, unfocusedTextColor = LuxIvory, cursorColor = LuxGoldChange),
+                    modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)
+                )
+
+                if (dailyAlloc > 0.0) {
+                    Spacer(Modifier.height(12.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = LuxGreen.copy(alpha = 0.1f)),
+                        border = BorderStroke(1.dp, LuxGreen.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Daily savings needed", color = LuxIvory, fontSize = 13.sp)
+                            Text("$currency${String.format("%,.0f", dailyAlloc)} / day", color = LuxGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(onClick = onDismiss, border = BorderStroke(1.dp, LuxMuted), shape = RoundedCornerShape(12.dp), modifier = Modifier.weight(1f)) {
+                        Text("Cancel", color = LuxIvory)
+                    }
+                    Button(
+                        onClick = { if (name.isNotBlank() && priceVal > 0 && monthsVal > 0) onAdd(name, priceVal, monthsVal) },
+                        enabled = name.isNotBlank() && priceVal > 0 && monthsVal > 0,
+                        colors = ButtonDefaults.buttonColors(containerColor = LuxGoldChange, contentColor = LuxBlack),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.weight(2f)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Add to Plan", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
     goalName: String,
     accounts: List<Account>,
     currency: String,

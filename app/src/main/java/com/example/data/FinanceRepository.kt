@@ -10,6 +10,7 @@ class FinanceRepository(private val dao: FinanceDao) {
     val goals: Flow<List<FinancialGoal>> = dao.getGoalsFlow()
     val debts: Flow<List<Debt>> = dao.getDebtsFlow()
     val reviews: Flow<List<WeeklyReview>> = dao.getReviewsFlow()
+    val wishlistItems: Flow<List<WishlistItem>> = dao.getWishlistFlow()
 
     suspend fun getProfileDirect(): UserProfile? = dao.getProfileDirect()
     suspend fun getAccountsDirect(): List<Account> = dao.getAccountsDirect()
@@ -107,4 +108,8 @@ class FinanceRepository(private val dao: FinanceDao) {
     suspend fun deleteDebt(debt: Debt) = dao.deleteDebt(debt)
 
     suspend fun insertReview(review: WeeklyReview) = dao.insertReview(review)
+
+    suspend fun insertWishlistItem(item: WishlistItem) = dao.insertWishlistItem(item)
+    suspend fun updateWishlistItem(item: WishlistItem) = dao.updateWishlistItem(item)
+    suspend fun deleteWishlistItem(item: WishlistItem) = dao.deleteWishlistItem(item)
 }

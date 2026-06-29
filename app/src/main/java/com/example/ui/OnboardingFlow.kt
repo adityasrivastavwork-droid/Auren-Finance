@@ -90,12 +90,13 @@ private const val STEP_WELCOME = 0
 private const val STEP_OBJECTIVE = 1
 private const val STEP_BUDGET_MODE = 2
 private const val STEP_INCOME = 3
-private const val STEP_FOUNDATION = 4
-private const val STEP_ACCOUNTS = 5
-private const val STEP_RECURRING = 6
-private const val STEP_DASHBOARD = 7
-private const val STEP_REVIEW = 8
-private const val STEP_COUNT = 9
+private const val STEP_FOUNDATION = 4      // safety buffer
+private const val STEP_DISCRETIONARY = 5   // monthly discretionary spend
+private const val STEP_ACCOUNTS = 6
+private const val STEP_RECURRING = 7
+private const val STEP_DASHBOARD = 8
+private const val STEP_REVIEW = 9
+private const val STEP_COUNT = 10
 
 /**
  * Multi-step onboarding wizard for Auren Money OS.
@@ -126,7 +127,8 @@ fun OnboardingFlow(
         hiddenWidgets: String,
         accounts: List<AccountEntry>,
         recurringItems: List<RecurringEntry>,
-        widgetOrder: String
+        widgetOrder: String,
+        monthlyDiscretionaryBudget: Double
     ) -> Unit
 ) {
     val initialStep = (profile?.onboardingStep ?: 0).coerceIn(0, STEP_COUNT - 1)
@@ -138,8 +140,10 @@ fun OnboardingFlow(
     var mode by rememberSaveable { mutableStateOf(profile?.appMode ?: "Strict Mode") }
     var salaryText by rememberSaveable { mutableStateOf(profile?.salaryAmount?.toInt()?.toString() ?: "60000") }
     var paydayText by rememberSaveable { mutableStateOf(profile?.salaryDate?.toString() ?: "1") }
-    var balanceText by rememberSaveable { mutableStateOf("25000") }
+    var balanceText by rememberSaveable { mutableStateOf("0") }
     var bufferText by rememberSaveable { mutableStateOf(profile?.safetyBuffer?.toInt()?.toString() ?: "2000") }
+    // Monthly discretionary: what the user wants to spend beyond basics
+    var discretionaryText by rememberSaveable { mutableStateOf(profile?.monthlyDiscretionaryBudget?.toInt()?.takeIf { it > 0 }?.toString() ?: "") }
 
     // Payday type state
     var paydayType by rememberSaveable { mutableStateOf("specific") } // "specific", "last_working", "last_day"
@@ -205,12 +209,13 @@ fun OnboardingFlow(
     val balanceValid = (balanceText.toDoubleOrNull() ?: -1.0) >= 0.0
     val bufferValid = (bufferText.toDoubleOrNull() ?: -1.0) >= 0.0
     val bufferOverBalance = (bufferText.toDoubleOrNull() ?: 0.0) > (balanceText.toDoubleOrNull() ?: 0.0)
+    val discretionaryValid = (discretionaryText.toDoubleOrNull() ?: -1.0) >= 0.0
     val widgetsValid = dashboardConfig.hasAnyVisible
     val accountsValid = accountEntries.isEmpty() || accountEntries.all { it.name.isNotBlank() && it.balance >= 0.0 }
 
     fun resolvedPayday(): Int = when (paydayType) {
         "specific" -> paydayText.toIntOrNull()?.coerceIn(1, 31) ?: 1
-        else -> 0 // sentinel: 0 = last_working / last_day
+        else -> 0
     }
 
     fun goNext() {
@@ -224,7 +229,8 @@ fun OnboardingFlow(
             payday = resolvedPayday(),
             buffer = bufferText.toDoubleOrNull(),
             hiddenWidgets = dashboardConfig.toCsv(),
-            widgetOrder = widgetOrderCsv
+            widgetOrder = widgetOrderCsv,
+            monthlyDiscretionaryBudget = discretionaryText.toDoubleOrNull()
         )
         step = nextStep
     }
@@ -240,12 +246,31 @@ fun OnboardingFlow(
             mode,
             salaryText.toDoubleOrNull() ?: 60000.0,
             resolvedPayday(),
-            balanceText.toDoubleOrNull() ?: 25000.0,
+            0.0, // balance no longer used for default account
             bufferText.toDoubleOrNull() ?: 2000.0,
             dashboardConfig.toCsv(),
             accountEntries,
             recurringEntries,
-            widgetOrderCsv
+            widgetOrderCsv,
+            discretionaryText.toDoubleOrNull() ?: 0.0
+        )
+    }
+
+    BackHandler(enabled = step > 0) { goBack() }
+
+    val ctaEnabled = when (step) {
+        STEP_WELCOME -> true
+        STEP_OBJECTIVE -> objective.isNotBlank()
+        STEP_BUDGET_MODE -> mode.isNotBlank()
+        STEP_INCOME -> salaryValid && paydayValid
+        STEP_FOUNDATION -> bufferValid
+        STEP_DISCRETIONARY -> discretionaryValid
+        STEP_ACCOUNTS -> accountsValid
+        STEP_RECURRING -> true
+        STEP_DASHBOARD -> widgetsValid
+        STEP_REVIEW -> salaryValid && paydayValid && bufferValid && discretionaryValid && widgetsValid && accountsValid
+        else -> true
+    }
         )
     }
 
@@ -323,6 +348,12 @@ fun OnboardingFlow(
                         bufferOverBalance = bufferOverBalance,
                         onBalance = { balanceText = it },
                         onBuffer = { bufferText = it }
+                    )
+                    STEP_DISCRETIONARY -> DiscretionaryStep(
+                        currency = currency,
+                        salary = salaryText.toDoubleOrNull() ?: 0.0,
+                        discretionary = discretionaryText,
+                        onDiscretionary = { discretionaryText = it }
                     )
                     STEP_ACCOUNTS -> AccountsStep(
                         currency = currency,
@@ -763,6 +794,78 @@ private fun FoundationStep(
                 lineHeight = 16.sp,
                 modifier = Modifier.padding(12.dp)
             )
+        }
+    }
+}
+
+@Composable
+private fun DiscretionaryStep(
+    currency: String,
+    salary: Double,
+    discretionary: String,
+    onDiscretionary: (String) -> Unit
+) {
+    StepHeader(
+        title = "Your monthly spending budget",
+        subtitle = "How much do you want to spend each month on non-essentials? This sets your daily limit — not your account balance."
+    )
+
+    val exampleCategories = "Shopping, dining, fuel, outings, entertainment, clothing, subscriptions, personal care — anything beyond rent, EMIs, and utility bills."
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = LuxGoldChange.copy(alpha = 0.08f)),
+        border = BorderStroke(1.dp, LuxGoldChange.copy(alpha = 0.3f)),
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("What counts as discretionary?", color = LuxGoldChange, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(exampleCategories, color = LuxMuted, fontSize = 12.sp, lineHeight = 18.sp)
+            if (salary > 0.0) {
+                Spacer(Modifier.height(8.dp))
+                val suggested = (salary * 0.30).toInt()
+                Text("Suggested (~30% of salary): $currency${String.format("%,d", suggested)}", color = LuxIvory, fontSize = 12.sp)
+            }
+        }
+    }
+
+    Spacer(Modifier.height(20.dp))
+
+    OutlinedTextField(
+        value = discretionary,
+        onValueChange = { if (it.all { c -> c.isDigit() }) onDiscretionary(it) },
+        label = { Text("Monthly discretionary budget ($currency)", color = LuxMuted, fontSize = 11.sp) },
+        placeholder = { Text("e.g. 15000", color = LuxMuted.copy(alpha = 0.5f)) },
+        leadingIcon = { Text(currency, color = LuxGoldChange, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.padding(start = 8.dp)) },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        textStyle = TextStyle(color = LuxIvory, fontSize = 18.sp, fontWeight = FontWeight.SemiBold),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = LuxGoldChange,
+            unfocusedBorderColor = LuxCardGray,
+            focusedTextColor = LuxIvory,
+            unfocusedTextColor = LuxIvory,
+            cursorColor = LuxGoldChange
+        ),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp)
+    )
+
+    Spacer(Modifier.height(12.dp))
+
+    val amt = discretionary.toDoubleOrNull() ?: 0.0
+    if (amt > 0.0 && salary > 0.0) {
+        val daily = (amt / 30.0)
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = LuxGreen.copy(alpha = 0.1f)),
+            border = BorderStroke(1.dp, LuxGreen.copy(alpha = 0.4f)),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Row(modifier = Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("Your daily spend limit", color = LuxIvory, fontSize = 13.sp)
+                Text("$currency${String.format("%,.0f", daily)} / day", color = LuxGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
